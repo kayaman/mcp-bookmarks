@@ -7,6 +7,7 @@ import json
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -42,6 +43,26 @@ def _default_judge_model() -> str:
 
 def ensemble_enabled() -> bool:
     return os.environ.get("ENSEMBLE_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+def gateway_status_public() -> dict[str, Any]:
+    """Safe metadata for the AI Gateway dashboard (no secrets)."""
+    raw = _gateway_base().strip().rstrip("/")
+    display = ""
+    if raw:
+        try:
+            url = raw if "://" in raw else f"https://{raw}"
+            parsed = urlparse(url)
+            display = (parsed.netloc or parsed.path or "").strip("/") or raw[:120]
+        except Exception:
+            display = raw[:120]
+    return {
+        "ensemble_enabled": ensemble_enabled(),
+        "default_models": _default_models(),
+        "default_judge": _default_judge_model(),
+        "has_api_key_configured": bool(_api_key()),
+        "gateway_display": display or "(default OpenAI host)",
+    }
 
 
 async def _chat_completion(

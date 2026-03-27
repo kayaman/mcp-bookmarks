@@ -18,6 +18,8 @@ Chamar **vários modelos** em paralelo através de um endpoint **compatível com
 
 - **MCP:** tool `ensemble_with_judge(task, models?, judge_model?)`.
 - **REST:** `POST /api/ensemble` com JSON `{"task":"...","models":["id1","id2"],"judge_model":"..."}` (`models` opcional se `ENSEMBLE_MODELS` estiver definido).
+- **Painel web:** com o servidor em execução, abre `GET /ai-gateway` (ex.: `http://localhost:8000/ai-gateway`) para testar o fluxo no browser. O painel chama `GET /api/ai-gateway/status` (metadados sem segredos) e `POST /api/ensemble`.
+- **Autenticação REST:** se `MCP_API_KEYS` estiver definido, o painel precisa da mesma chave que os outros endpoints: campo opcional no formulário (guardado só em `sessionStorage` neste separador) como `Authorization: Bearer …` ou `X-API-Key`. A chave do gateway LLM (`OPENAI_API_KEY` / `AI_GATEWAY_API_KEY`) nunca é exposta pela API de estado.
 
 ## Resposta
 
