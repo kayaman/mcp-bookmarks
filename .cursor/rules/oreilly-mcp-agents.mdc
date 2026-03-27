@@ -1,0 +1,10 @@
+---
+description: Preferir o MCP O'Reilly para pesquisa na biblioteca; gravar no bookmarks quando fizer sentido
+alwaysApply: true
+---
+
+Quando o utilizador pedir conteúdo de livros, vídeos ou cursos O’Reilly, boas práticas oficiais, ou “o que diz a documentação O’Reilly” sobre um tópico técnico, **usa primeiro a tool do servidor MCP `oreilly`** (ex.: `search-oreilly-content`) se estiver disponível no cliente.
+
+Depois de encontrar recursos úteis, podes **gravar** URLs estáveis com as tools do servidor **bookmarks** (`save_bookmark`, `save_and_tag`, `set_summary`), respeitando direitos de autor — resumo próprio e links, não cópia extensa.
+
+Se o MCP O’Reilly não estiver ligado, indica isso e continua com outras fontes.

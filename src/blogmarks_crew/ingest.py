@@ -6,6 +6,8 @@ from pathlib import Path
 
 import httpx
 
+from .api_base_util import rest_api_prefix
+
 
 def load_urls(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -20,7 +22,7 @@ def ingest_urls(
     api_key: str | None = None,
 ) -> tuple[int, int]:
     """Return (ok_count, fail_count)."""
-    base = api_base.rstrip("/")
+    prefix = rest_api_prefix(api_base)
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -29,7 +31,7 @@ def ingest_urls(
     with httpx.Client(timeout=timeout) as client:
         for url in urls:
             try:
-                r = client.post(f"{base}/api/save", json={"url": url}, headers=headers)
+                r = client.post(f"{prefix}/save", json={"url": url}, headers=headers)
                 if r.is_success:
                     ok += 1
                 else:

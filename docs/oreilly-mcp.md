@@ -2,8 +2,13 @@
 
 ## Setup
 
-1. Install the **O'Reilly platform MCP** per current O'Reilly documentation (transport, URL, enterprise vs individual).
-2. Keep **bookmarks** SSE pointed at this server (`http://localhost:8000/sse` or your deployed URL).
+1. Create a token: [MCP Tokens](https://learning.oreilly.com/access-tokens/) (Profile) or your org’s API Tokens / Content MCP token (Admin).
+2. **Endpoint (Streamable HTTP):** `https://api.oreilly.com/api/content-discovery/v1/mcp/`
+3. **Auth:** `Authorization: Bearer <token>` (no OAuth on this server). Full API doc: [learning.oreilly.com/apidocs/mcp/content](https://learning.oreilly.com/apidocs/mcp/content).
+4. In **Cursor**, merge into `mcpServers` (use project **`.cursor/mcp.json`**, gitignored—copy from [`.cursor/mcp.json.example`](../.cursor/mcp.json.example)).
+5. Keep **bookmarks** SSE on `http://localhost:8000/sse` (or your deploy).
+
+**Combined guide (PT):** [`integracao-mcp-oreilly-brightdata.md`](integracao-mcp-oreilly-brightdata.md).
 
 ## Prompt pattern
 

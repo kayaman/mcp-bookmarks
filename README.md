@@ -125,13 +125,15 @@ npx -y @modelcontextprotocol/inspector
 # Connect to http://localhost:8000/sse
 ```
 
+### O’Reilly + Bright Data + bookmarks (multi-MCP)
+
+Integration is **three MCP servers in the client** (not bundled into this repo). Step-by-step (PT): **[`docs/integracao-mcp-oreilly-brightdata.md`](docs/integracao-mcp-oreilly-brightdata.md)**. Copy **[`.cursor/mcp.json.example`](.cursor/mcp.json.example)** → **`.cursor/mcp.json`** and replace `YOUR_OREILLY_MCP_TOKEN` and Bright Data token (`.cursor/mcp.json` is **gitignored**). O’Reilly official endpoint: `https://api.oreilly.com/api/content-discovery/v1/mcp/` + Bearer token ([docs](https://learning.oreilly.com/apidocs/mcp/content)). Cursor agents also load project rule **[`.cursor/rules/oreilly-mcp-agents.mdc`](.cursor/rules/oreilly-mcp-agents.mdc)** to prefer `search-oreilly-content` when relevant.
+
+**Typical web flow:** `save_bookmark(url)` → Bright Data `scrape_as_markdown` (or search) → `set_bookmark_body(bookmark_id, text)` → `get_tags` / `tag_bookmark` / `set_summary`.
+
 ### Fetch / search MCPs (Bright Data, Tavily)
 
-Add Bright Data and/or Tavily as additional `mcpServers` (see each vendor’s MCP install docs and API keys). Typical flow: `save_bookmark(url)` → fetch HTML or snippets with the other MCP → `set_bookmark_body(bookmark_id, text)` → `get_tags` / `tag_bookmark` / `set_summary`.
-
-### O'Reilly Learning (second MCP server)
-
-Add the **O'Reilly platform MCP** as a second entry in `mcpServers` (see current O'Reilly docs for transport, URL, and auth). Keep **bookmarks** pointed at this server so the model can search O'Reilly and save highlights with `save_bookmark` / `save_and_tag`.
+See also **[`docs/mcp-fetch-integrations.md`](docs/mcp-fetch-integrations.md)** for Tavily and Bright Data JSON snippets. O’Reilly-only prompts and compliance: **[`docs/oreilly-mcp.md`](docs/oreilly-mcp.md)**.
 
 ### Batch ingest (`blogmarks-crew`)
 
@@ -143,11 +145,16 @@ uv run blogmarks-crew ingest --urls-file urls.txt --api-base http://127.0.0.1:80
 uv run blogmarks-crew ingest --urls-file urls.txt --api-key "$MCP_API_KEY"
 ```
 
-Optional **CrewAI** topic clustering (install extras, set your LLM API key as required by CrewAI, e.g. `OPENAI_API_KEY`):
+Optional **CrewAI** (install extras, set LLM env vars as required by CrewAI, e.g. `OPENAI_API_KEY`):
 
 ```bash
 uv sync --extra crew
+# Topic clusters from URL list only (no fetch)
 uv run blogmarks-crew agents --urls-file urls.txt
+# Save URL via REST, then librarian + editor agents tag + summarize (uses new REST tools)
+uv run blogmarks-crew enrich --url https://example.com/article --api-base http://127.0.0.1:8000
+# Topic slug ideas from one saved bookmark
+uv run blogmarks-crew suggest-topics --bookmark-id 1 --api-base http://127.0.0.1:8000
 ```
 
 ### AWS (Terraform)
@@ -166,7 +173,7 @@ With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_book
 
 ### Rust fetch CLI (optional)
 
-[`rust/blogmarks-fetch/`](rust/blogmarks-fetch/) — `cargo run --release -- https://example.com` prints JSON (status, HTML size). Extend with readability-style extraction for batch ingest.
+[`rust/blogmarks-fetch/`](rust/blogmarks-fetch/) — `cargo run --release -- https://example.com` prints JSON (`status`, `html_bytes`, optional `title` from `<title>`). Extend with readability-style extraction for batch ingest.
 
 ### Deploying this package (per release)
 
@@ -286,7 +293,11 @@ mcp-bookmarks/
 │   ├── cli.py               # Terminal client
 │   └── server.py            # FastMCP: 14 tools, 4 prompts, 2 resources
 └── src/blogmarks_crew/
-    ├── cli.py               # blogmarks-crew ingest | agents
+    ├── cli.py               # blogmarks-crew ingest | agents | enrich | suggest-topics
     ├── ingest.py            # Batch POST /api/save
-    └── crew_pipeline.py     # Optional CrewAI topic clustering ([project.optional-dependencies] crew)
+    ├── api_base_util.py     # Normalize --api-base to …/api
+    ├── rest_crew_tools.py   # httpx tools for CrewAI → REST
+    ├── crew_pipeline.py     # CrewAI URL-list topic clusters ([crew] extra)
+    ├── crew_enrich.py       # Librarian + editor after POST /save
+    └── crew_topics.py       # Topic slug suggestions from GET /bookmarks/{id}
 ```

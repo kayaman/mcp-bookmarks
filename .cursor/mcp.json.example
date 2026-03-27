@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "bookmarks": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
+    },
+    "oreilly": {
+      "url": "https://api.oreilly.com/api/content-discovery/v1/mcp/",
+      "headers": {
+        "Authorization": "Bearer YOUR_OREILLY_MCP_TOKEN"
+      }
+    },
+    "bright-data": {
+      "command": "npx",
+      "args": ["-y", "@brightdata/mcp"],
+      "env": {
+        "API_TOKEN": "replace-with-bright-data-api-token"
+      }
+    }
+  }
+}

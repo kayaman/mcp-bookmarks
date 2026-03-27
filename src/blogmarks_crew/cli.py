@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import httpx
+
 from .ingest import ingest_urls, load_urls
 
 
@@ -48,6 +50,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Text file: one URL per line.",
     )
 
+    enrich_p = sub.add_parser(
+        "enrich",
+        help="POST /api/save then CrewAI (librarian+editor) to tag and summarize via REST tools.",
+    )
+    enrich_p.add_argument("--url", required=True, help="URL to save and enrich.")
+    enrich_p.add_argument(
+        "--api-base",
+        default="http://127.0.0.1:8000",
+        help="Server origin; /api is appended if missing (default: http://127.0.0.1:8000).",
+    )
+    enrich_p.add_argument(
+        "--api-key",
+        default=None,
+        help="Bearer token when MCP_API_KEYS is set on the server.",
+    )
+
+    topics_p = sub.add_parser(
+        "suggest-topics",
+        help="CrewAI: topic slug ideas from one bookmark (GET /api/bookmarks/<id>).",
+    )
+    topics_p.add_argument("--bookmark-id", required=True, help="Bookmark id (integer in SQLite).")
+    topics_p.add_argument(
+        "--api-base",
+        default="http://127.0.0.1:8000",
+        help="Server origin; /api appended if missing.",
+    )
+    topics_p.add_argument("--api-key", default=None, help="Bearer token if REST is protected.")
+
     args = parser.parse_args(argv)
 
     if args.command == "ingest":
@@ -69,6 +99,31 @@ def main(argv: list[str] | None = None) -> int:
         try:
             out = run_topic_crew(urls)
         except ImportError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(out)
+        return 0
+
+    if args.command == "enrich":
+        from .crew_enrich import run_enrichment_crew
+
+        try:
+            out = run_enrichment_crew(args.url, args.api_base, api_key=args.api_key)
+        except ImportError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(out)
+        return 0
+
+    if args.command == "suggest-topics":
+        from .crew_topics import run_topic_suggest_crew
+
+        try:
+            out = run_topic_suggest_crew(args.bookmark_id, args.api_base, api_key=args.api_key)
+        except ImportError as e:
+            print(e, file=sys.stderr)
+            return 1
+        except httpx.HTTPError as e:
             print(e, file=sys.stderr)
             return 1
         print(out)

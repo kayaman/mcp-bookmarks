@@ -9,7 +9,11 @@ Endpoints (mounted at ``/api``):
     POST /api/save      — Quick save a URL (extract OG + content)
     GET  /api/stats     — Knowledge base stats
     GET  /api/bookmarks — List/search bookmarks
+    GET  /api/bookmarks/{{id}} — One bookmark (JSON; for CrewAI / clients)
     GET  /api/tags      — List all tags
+    POST /api/tag       — Create a tag (slug, name, description) — Crew / automation
+    POST /api/bookmarks/{{id}}/summary — Set AI summary text
+    POST /api/bookmarks/{{id}}/tags    — Assign existing tag slugs
     GET  /api/usage     — Monthly usage counter (when API keys configured)
     POST /api/ensemble  — Multi-model + LLM judge (requires ENSEMBLE_ENABLED=true)
     GET  /bookmarklet   — Bookmarklet installation page
@@ -204,6 +208,129 @@ async def api_tags(request: Request) -> JSONResponse:
                 ],
             }
         )
+    finally:
+        await db.close()
+
+
+_MAX_BOOKMARK_CONTENT_JSON = 400_000
+
+
+async def api_get_bookmark(request: Request) -> JSONResponse:
+    """GET /bookmarks/{bookmark_id} — Full bookmark including content (SQLite)."""
+    bookmark_id = request.path_params["bookmark_id"]
+    db = await _db()
+    try:
+        bm = await db.get_bookmark_by_id(bookmark_id)
+        if not bm:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        payload = bm.model_dump(mode="json")
+        content = payload.get("content") or ""
+        if isinstance(content, str) and len(content) > _MAX_BOOKMARK_CONTENT_JSON:
+            payload["content"] = content[:_MAX_BOOKMARK_CONTENT_JSON] + "\n…[truncated for JSON response]"
+            payload["content_truncated"] = True
+        return JSONResponse(payload)
+    finally:
+        await db.close()
+
+
+async def api_create_tag_rest(request: Request) -> JSONResponse:
+    """POST /tag — Create taxonomy tag (body JSON: slug, name, description?)."""
+    tenant = _effective_tenant(request)
+    blocked = await _check_rest_quota(tenant)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    slug = (body.get("slug") or "").strip()
+    name = (body.get("name") or "").strip()
+    description = (body.get("description") or "").strip()
+    if not slug or not name:
+        return JSONResponse(
+            {"error": "slug and name are required"},
+            status_code=400,
+        )
+    db = await _db()
+    try:
+        existing = await db.get_tag_by_slug(slug)
+        if existing:
+            return JSONResponse(
+                {"error": "tag_exists", "slug": slug},
+                status_code=409,
+            )
+        tag = await db.create_tag(slug=slug, name=name, description=description)
+        await _record_rest_usage(tenant, "rest_create_tag", {"slug": slug})
+        return JSONResponse(
+            {
+                "created": {
+                    "slug": tag.slug,
+                    "name": tag.name,
+                    "description": tag.description,
+                }
+            },
+            status_code=201,
+        )
+    finally:
+        await db.close()
+
+
+async def api_bookmark_summary(request: Request) -> JSONResponse:
+    """POST /bookmarks/{bookmark_id}/summary — Body: {\"summary\": \"...\"}."""
+    tenant = _effective_tenant(request)
+    blocked = await _check_rest_quota(tenant)
+    if blocked:
+        return blocked
+    bookmark_id = request.path_params["bookmark_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    summary = body.get("summary")
+    if summary is None or not isinstance(summary, str):
+        return JSONResponse({"error": "summary must be a string"}, status_code=400)
+    db = await _db()
+    try:
+        bm = await db.get_bookmark_by_id(bookmark_id)
+        if not bm:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        await db.set_bookmark_summary(bookmark_id, summary)
+        await _record_rest_usage(tenant, "rest_set_summary", {"bookmark_id": str(bookmark_id)})
+        return JSONResponse({"status": "ok", "bookmark_id": bookmark_id})
+    finally:
+        await db.close()
+
+
+async def api_bookmark_tags(request: Request) -> JSONResponse:
+    """POST /bookmarks/{bookmark_id}/tags — Body: {\"tag_slugs\": [\"a\",\"b\"]}."""
+    tenant = _effective_tenant(request)
+    blocked = await _check_rest_quota(tenant)
+    if blocked:
+        return blocked
+    bookmark_id = request.path_params["bookmark_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    slugs = body.get("tag_slugs")
+    if not isinstance(slugs, list) or not all(isinstance(s, str) for s in slugs):
+        return JSONResponse(
+            {"error": "tag_slugs must be a list of strings"},
+            status_code=400,
+        )
+    db = await _db()
+    try:
+        bm = await db.get_bookmark_by_id(bookmark_id)
+        if not bm:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        try:
+            await db.tag_bookmark(bookmark_id, slugs)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        await _record_rest_usage(
+            tenant, "rest_tag_bookmark", {"bookmark_id": str(bookmark_id), "count": len(slugs)}
+        )
+        return JSONResponse({"status": "ok", "bookmark_id": bookmark_id, "tag_slugs": slugs})
     finally:
         await db.close()
 
@@ -417,7 +544,9 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
             API: <code>POST /api/save</code> &middot;
             <code>GET /api/bookmarks</code> &middot;
             <code>GET /api/tags</code> &middot;
-            <code>GET /api/stats</code>
+            <code>GET /api/stats</code> &middot;
+            <code>GET /api/bookmarks/&lt;id&gt;</code> &middot;
+            <code>POST /api/tag</code>
         </div>
     </div>
 </body>
@@ -434,7 +563,11 @@ def create_api_app() -> Starlette:
         routes=[
             Route("/save", api_save, methods=["POST"]),
             Route("/stats", api_stats, methods=["GET"]),
+            Route("/bookmarks/{bookmark_id}/summary", api_bookmark_summary, methods=["POST"]),
+            Route("/bookmarks/{bookmark_id}/tags", api_bookmark_tags, methods=["POST"]),
+            Route("/bookmarks/{bookmark_id}", api_get_bookmark, methods=["GET"]),
             Route("/bookmarks", api_bookmarks, methods=["GET"]),
+            Route("/tag", api_create_tag_rest, methods=["POST"]),
             Route("/tags", api_tags, methods=["GET"]),
             Route("/usage", api_usage, methods=["GET"]),
             Route("/ensemble", api_ensemble, methods=["POST"]),

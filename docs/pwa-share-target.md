@@ -6,7 +6,25 @@ Implementation lives in the **[blogmarks](https://github.com/kayaman/blogmarks)*
 
 - **HTTPS** and a stable origin (`blogmarks.dev`).
 - **Web App Manifest** `share_target` with `action` (e.g. `/share`), `method` `POST`, `enctype` `multipart/form-data` or `application/x-www-form-urlencoded`, `params` for `url`, `title`, `text`.
-- **Route handler** `/share` (or chosen path): read shared fields, require authenticated session, call existing bookmark ingest API (same pipeline as in-app save).
+
+### Example `share_target` fragment (manifest.json)
+
+```json
+{
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
+```
+
+- **Route handler** `/share` (or chosen path): read shared fields, require authenticated session, call existing bookmark ingest API (same pipeline as in-app save). Prefer `POST` body fields matching `params` above; validate origin CSRF as for other forms.
 - **Service worker** (optional): queue shares when offline, sync when online.
 
 ## UX

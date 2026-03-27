@@ -11,7 +11,39 @@ Use alongside **bookmarks** when sites block simple HTTP fetches.
 
 ## Cursor / Claude Desktop (`mcpServers`)
 
-Add entries from each vendor’s MCP installation guide. Example shape (URLs and env names vary):
+Add entries from each vendor’s MCP installation guide. Full **O’Reilly + Bright Data + bookmarks** walkthrough (PT): [`docs/integracao-mcp-oreilly-brightdata.md`](integracao-mcp-oreilly-brightdata.md). Copy-paste example: [`.cursor/mcp.json.example`](../.cursor/mcp.json.example).
+
+### Bright Data (official)
+
+**Hosted URL** (no local install; keep token out of git):
+
+```
+https://mcp.brightdata.com/mcp?token=YOUR_API_TOKEN_HERE
+```
+
+**Local `npx`**:
+
+```json
+{
+  "mcpServers": {
+    "bookmarks": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
+    },
+    "bright-data": {
+      "command": "npx",
+      "args": ["-y", "@brightdata/mcp"],
+      "env": {
+        "API_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+Docs: [Bright Data MCP overview](https://docs.brightdata.com/mcp-server/overview), npm [`@brightdata/mcp`](https://www.npmjs.com/package/@brightdata/mcp).
+
+### Tavily
 
 ```json
 {
@@ -30,8 +62,6 @@ Add entries from each vendor’s MCP installation guide. Example shape (URLs and
   }
 }
 ```
-
-Bright Data: follow [Bright Data MCP](https://brightdata.com/) documentation for command/transport.
 
 ## Cost & TOS
 

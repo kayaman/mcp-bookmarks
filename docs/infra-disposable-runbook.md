@@ -2,7 +2,20 @@
 
 ## Preconditions
 
-- Terraform state remote: S3 + DynamoDB lock (configure `backend` in `terraform/`).
+- **Remote state (recommended):** add a `backend "s3" {}` block to `terraform/` (or a root module) pointing at a **dedicated** state bucket and lock table (e.g. DynamoDB `terraform-locks`). The state bucket must **not** be destroyed with the app stack. Example:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "your-org-terraform-state"
+    key            = "mcp-bookmarks/prod/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
 - No production users you care about, or run **data export** first (DynamoDB to S3, RDS snapshot).
 
 ## Destroy stack

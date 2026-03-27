@@ -7,3 +7,5 @@ dist/
 terraform/.build/
 *.zip
 .env
+# Local MCP secrets (copy from .cursor/mcp.json.example)
+.cursor/mcp.json

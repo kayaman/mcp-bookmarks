@@ -129,6 +129,37 @@ async def main():
             assert data["total"] >= 1
             print(f"✓ GET /api/bookmarks?query=github → {data['total']} result(s)")
 
+            # ── GET /api/bookmarks/1 ──
+            resp = await client.get(f"{base}/api/bookmarks/1")
+            assert resp.status_code == 200
+            b1 = resp.json()
+            assert b1.get("url")
+            print(f"✓ GET /api/bookmarks/1 → url present")
+
+            # ── POST /api/tag ──
+            resp = await client.post(
+                f"{base}/api/tag",
+                json={"slug": "open-source", "name": "Open Source", "description": "FOSS"},
+            )
+            assert resp.status_code == 201
+            print(f"✓ POST /api/tag → 201")
+
+            # ── POST /api/bookmarks/1/tags ──
+            resp = await client.post(
+                f"{base}/api/bookmarks/1/tags",
+                json={"tag_slugs": ["open-source"]},
+            )
+            assert resp.status_code == 200
+            print(f"✓ POST /api/bookmarks/1/tags → 200")
+
+            # ── POST /api/bookmarks/1/summary ──
+            resp = await client.post(
+                f"{base}/api/bookmarks/1/summary",
+                json={"summary": "GitHub landing page."},
+            )
+            assert resp.status_code == 200
+            print(f"✓ POST /api/bookmarks/1/summary → 200")
+
             # ── GET /api/stats (after saves) ──
             resp = await client.get(f"{base}/api/stats")
             data = resp.json()
