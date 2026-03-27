@@ -1,0 +1,21 @@
+# Copie para terraform.tfvars (não commite segredos).
+# aws configure --profile sua-conta
+# export AWS_PROFILE=sua-conta
+
+aws_region           = "us-east-1"
+project_name         = "blogmarks"
+environment          = "prod"
+cost_center          = "product-mvp"
+owner_tag            = "founder"
+monthly_budget_usd   = "300"
+budget_alert_email   = "you@example.com"
+budget_period_start  = "2025-03-01_00:00"
+
+db_instance_class         = "db.t4g.micro"
+db_allocated_storage_gb   = 20
+ecs_desired_count         = 0
+mcp_container_image       = "public.ecr.aws/docker/library/nginx:alpine"
+
+# Prefer: export TF_VAR_anthropic_api_key="sk-ant-..."
+anthropic_api_key         = "REPLACE_ME"
+enable_lambda_processor   = true

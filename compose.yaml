@@ -1,0 +1,20 @@
+# podman-compose up -d
+# or: podman compose up -d (Podman 4.7+)
+services:
+  mcp-bookmarks:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: mcp-bookmarks
+    ports:
+      - "8000:8000"
+    volumes:
+      - mcp-bookmarks-data:/data
+    environment:
+      - MCP_PORT=8000
+      - MCP_HOST=0.0.0.0
+      - BOOKMARKS_DB_PATH=/data/bookmarks.db
+    restart: unless-stopped
+
+volumes:
+  mcp-bookmarks-data:

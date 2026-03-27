@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.git
+.env
+*.db
+.venv
+.mypy_cache
+.pytest_cache
+tests/
+*.tar.gz

@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MCP Bookmarks — DynamoDB-triggered AI agent
+
+Parameters:
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Description: Anthropic API key (stored in Secrets Manager)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 300       # 5 min — trafilatura + Claude can be slow
+    MemorySize: 512
+    Environment:
+      Variables:
+        LINKS_TABLE: !Ref LinksTable
+        TAGS_TABLE: !Ref TagsTable
+        ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+
+Resources:
+
+  # ── DynamoDB: links table (input + output) ─────────────────────────────────
+  LinksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: mcp-bookmarks-links
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE   # Lambda only needs the new item
+
+  # ── DynamoDB: tag taxonomy ─────────────────────────────────────────────────
+  TagsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: mcp-bookmarks-tags
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: slug
+          AttributeType: S
+      KeySchema:
+        - AttributeName: slug
+          KeyType: HASH
+
+  # ── Lambda: AI agent processor ─────────────────────────────────────────────
+  BookmarkProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: mcp-bookmarks-processor
+      CodeUri: .
+      Handler: handler.handler
+      Description: Processes new links from DynamoDB Streams using Claude
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LinksTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TagsTable
+      Events:
+        DynamoDBStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt LinksTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 5            # process up to 5 links per invocation
+            MaximumBatchingWindowInSeconds: 10
+            BisectBatchOnFunctionError: true
+            DestinationConfig:
+              OnFailure:
+                Destination: !GetAtt DeadLetterQueue.Arn
+
+  # ── SQS: dead-letter queue for failed batches ──────────────────────────────
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: mcp-bookmarks-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+
+Outputs:
+  LinksTableName:
+    Value: !Ref LinksTable
+    Description: Insert {id, url, status:"PENDING"} items here to trigger processing
+
+  TagsTableName:
+    Value: !Ref TagsTable
+
+  ProcessorFunctionArn:
+    Value: !GetAtt BookmarkProcessorFunction.Arn
+
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue
