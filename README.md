@@ -214,6 +214,8 @@ The Blogmarks **PWA** (separate front-end repo / deployment) can use the [Web Sh
 
 Aponta `AI_GATEWAY_BASE_URL` (ou `OPENAI_BASE_URL`) para o teu gateway **compatível com OpenAI** (`…/v1/chat/completions`). Define `ENSEMBLE_ENABLED=true`, chave em `AI_GATEWAY_API_KEY` ou `OPENAI_API_KEY`, e `ENSEMBLE_MODELS` (lista separada por vírgulas). O MCP tool **`ensemble_with_judge`** e **`POST /api/ensemble`** (`{"task":"...","models":["a","b"],"judge_model":"..."}`) fazem N chamadas em paralelo e uma chamada de **juiz** (`JUDGE_MODEL`, default `gpt-4o-mini`) que devolve JSON com `answer`, `rationale`, `chosen_index`. Custo: **N+1** chamadas; usa também o medidor de quota se estiver ativo.
 
+**Painel web:** com o servidor a correr, abre **`/ai-gateway`** (ex.: `http://localhost:8000/ai-gateway`) para testar o ensemble no browser; **`GET /api/ai-gateway/status`** expõe só metadados seguros (sem chaves). Se **`MCP_API_KEYS`** estiver definido, usa o mesmo `Bearer` ou `X-API-Key` que nos outros endpoints (o painel pode guardar a chave REST em `sessionStorage` neste separador). Ver [`docs/ai-gateway-ensemble.md`](docs/ai-gateway-ensemble.md).
+
 ## Prompts
 
 | Prompt | Args | Description |

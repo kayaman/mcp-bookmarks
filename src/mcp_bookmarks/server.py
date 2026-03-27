@@ -1040,12 +1040,13 @@ def create_combined_app():
         /sse, /messages/  → MCP protocol (SSE transport)
         /api/*            → REST API (bookmarklet, browser clients)
         /bookmarklet      → Bookmarklet installation page
+        /ai-gateway       → AI Gateway ensemble + judge test UI
     """
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
     from starlette.responses import RedirectResponse
 
-    from .api import create_api_app, bookmarklet_page, stripe_webhook
+    from .api import ai_gateway_page, create_api_app, bookmarklet_page, stripe_webhook
 
     api_app = create_api_app()
     sse_app = mcp.sse_app()
@@ -1059,6 +1060,7 @@ def create_combined_app():
         routes=[
             Route("/", root),
             Route("/bookmarklet", bookmarklet_page),
+            Route("/ai-gateway", ai_gateway_page),
             Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
             Mount("/api", app=api_app),
             Mount("/", app=sse_app),
@@ -1079,6 +1081,7 @@ def main():
     print(f"   REST API:    http://{host}:{port}/api/")
     print(f"   Stripe hook: http://{host}:{port}/webhooks/stripe")
     print(f"   Bookmarklet: http://{host}:{port}/bookmarklet")
+    print(f"   AI Gateway:  http://{host}:{port}/ai-gateway")
     print()
 
     app = create_combined_app()

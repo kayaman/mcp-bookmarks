@@ -15,6 +15,7 @@ Endpoints (mounted at ``/api``):
     POST /api/bookmarks/{{id}}/summary — Set AI summary text
     POST /api/bookmarks/{{id}}/tags    — Assign existing tag slugs
     GET  /api/usage     — Monthly usage counter (when API keys configured)
+    GET  /api/ai-gateway/status — Safe metadata for the AI Gateway dashboard (no secrets)
     POST /api/ensemble  — Multi-model + LLM judge (requires ENSEMBLE_ENABLED=true)
     GET  /bookmarklet   — Bookmarklet installation page
 
@@ -392,6 +393,330 @@ async def api_ensemble(request: Request) -> JSONResponse:
     return JSONResponse(out)
 
 
+async def api_ai_gateway_status(request: Request) -> JSONResponse:
+    """GET /ai-gateway/status — Safe gateway metadata for the dashboard (no secrets)."""
+    return JSONResponse(llm_ensemble.gateway_status_public())
+
+
+async def ai_gateway_page(request: Request) -> HTMLResponse:
+    """GET /ai-gateway (mounted at app root) — Visual tester for POST /api/ensemble."""
+    _ = request  # Starlette passes request; page uses same-origin fetch
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Gateway — Ensemble + Judge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=system-ui:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 1.5rem;
+            line-height: 1.5;
+        }}
+        .wrap {{ max-width: 1100px; margin: 0 auto; }}
+        h1 {{
+            font-size: 1.35rem;
+            color: #4ade80;
+            margin-bottom: 0.25rem;
+            font-weight: 700;
+        }}
+        .sub {{ color: #888; font-size: 0.9rem; margin-bottom: 1.25rem; }}
+        .status-bar {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 1.5rem;
+        }}
+        .stat {{
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 14px 16px;
+        }}
+        .stat label {{
+            display: block;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: #666;
+            margin-bottom: 6px;
+        }}
+        .stat .val {{
+            font-family: "JetBrains Mono", ui-monospace, monospace;
+            font-size: 0.95rem;
+            color: #a7f3d0;
+            word-break: break-all;
+        }}
+        .stat .val.warn {{ color: #fbbf24; }}
+        .stat .val.err {{ color: #f87171; }}
+        .panel {{
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 14px;
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.25rem;
+        }}
+        .panel h2 {{ font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }}
+        label.f {{ display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px; }}
+        textarea, input[type="text"], input[type="password"] {{
+            width: 100%;
+            background: #12122a;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            color: #e0e0e0;
+            padding: 10px 12px;
+            font-family: "JetBrains Mono", ui-monospace, monospace;
+            font-size: 0.85rem;
+        }}
+        textarea {{ min-height: 100px; resize: vertical; }}
+        .row {{ margin-bottom: 14px; }}
+        .hint {{ font-size: 0.75rem; color: #64748b; margin-top: 4px; }}
+        button.primary {{
+            background: linear-gradient(135deg, #4ade80, #22d3ee);
+            color: #0f0f1a;
+            border: none;
+            padding: 12px 28px;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 1rem;
+        }}
+        button.primary:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+        .banner {{
+            padding: 12px 14px;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }}
+        .banner.info {{ background: #1e3a5f; border: 1px solid #3b82f6; color: #bfdbfe; }}
+        .banner.bad {{ background: #3f1d1d; border: 1px solid #ef4444; color: #fecaca; }}
+        .candidates {{ display: grid; gap: 12px; }}
+        .card {{
+            background: #12122a;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            padding: 14px;
+        }}
+        .card h3 {{
+            font-family: "JetBrains Mono", monospace;
+            font-size: 0.8rem;
+            color: #22d3ee;
+            margin-bottom: 8px;
+        }}
+        .card .body {{ white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; }}
+        .card .body.err {{ color: #f87171; }}
+        .badge {{
+            display: inline-block;
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #f59e0b33;
+            color: #fcd34d;
+            margin-left: 8px;
+            vertical-align: middle;
+        }}
+        .final {{
+            border-left: 3px solid #4ade80;
+            padding-left: 14px;
+            margin-top: 8px;
+        }}
+        .final .answer {{ font-size: 0.95rem; margin: 8px 0; white-space: pre-wrap; }}
+        .final .meta {{ font-size: 0.8rem; color: #94a3b8; font-family: "JetBrains Mono", monospace; }}
+        code {{ background: #2a2a4a; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }}
+        a {{ color: #22d3ee; }}
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>AI Gateway — Ensemble + Judge</h1>
+        <p class="sub">Test <code>POST /api/ensemble</code> from the browser. Configure the server with <code>docs/ai-gateway-ensemble.md</code>.</p>
+        <div id="loadErr" class="banner bad" style="display:none"></div>
+        <div class="status-bar" id="statusBar"></div>
+        <div class="panel">
+            <h2>Request</h2>
+            <div class="row">
+                <label class="f" for="apiKey">REST API key (optional)</label>
+                <input type="password" id="apiKey" autocomplete="off" placeholder="Bearer token if MCP_API_KEYS is set">
+                <p class="hint">Stored only in <code>sessionStorage</code> for this tab (cleared when the tab closes). Use <code>X-API-Key</code> alternative below if you prefer.</p>
+            </div>
+            <div class="row">
+                <label class="f" for="apiKeyHeader">Or X-API-Key (optional)</label>
+                <input type="password" id="apiKeyHeader" autocomplete="off" placeholder="Same key sent as X-API-Key header">
+            </div>
+            <div class="row">
+                <label class="f" for="task">Task</label>
+                <textarea id="task" placeholder="User prompt for all candidate models…"></textarea>
+            </div>
+            <div class="row">
+                <label class="f" for="models">Models (comma or one per line; optional if ENSEMBLE_MODELS is set)</label>
+                <textarea id="models" style="min-height:64px" placeholder="gpt-4o-mini, claude-3-haiku…"></textarea>
+            </div>
+            <div class="row">
+                <label class="f" for="judge">Judge model (optional)</label>
+                <input type="text" id="judge" placeholder="Default from JUDGE_MODEL env">
+            </div>
+            <button type="button" class="primary" id="runBtn">Run ensemble</button>
+        </div>
+        <div class="panel" id="resultPanel" style="display:none">
+            <h2>Result <span id="partialBadge" class="badge" style="display:none">partial</span></h2>
+            <div id="finalBlock"></div>
+            <h2 style="margin-top:1.25rem">Candidates</h2>
+            <div class="candidates" id="candidates"></div>
+        </div>
+    </div>
+    <script>
+(function() {{
+    var STORAGE_BEARER = 'mcp-bookmarks-ai-gateway-bearer';
+    var STORAGE_XKEY = 'mcp-bookmarks-ai-gateway-xkey';
+    var apiKeyEl = document.getElementById('apiKey');
+    var apiKeyHeaderEl = document.getElementById('apiKeyHeader');
+    apiKeyEl.value = sessionStorage.getItem(STORAGE_BEARER) || '';
+    apiKeyHeaderEl.value = sessionStorage.getItem(STORAGE_XKEY) || '';
+    apiKeyEl.addEventListener('change', function() {{
+        var v = apiKeyEl.value.trim();
+        if (v) sessionStorage.setItem(STORAGE_BEARER, v); else sessionStorage.removeItem(STORAGE_BEARER);
+    }});
+    apiKeyHeaderEl.addEventListener('change', function() {{
+        var v = apiKeyHeaderEl.value.trim();
+        if (v) sessionStorage.setItem(STORAGE_XKEY, v); else sessionStorage.removeItem(STORAGE_XKEY);
+    }});
+
+    function authHeaders() {{
+        var h = {{}};
+        var b = apiKeyEl.value.trim();
+        var x = apiKeyHeaderEl.value.trim();
+        if (b) h['Authorization'] = 'Bearer ' + b;
+        if (x) h['X-API-Key'] = x;
+        return h;
+    }}
+
+    function parseModels(raw) {{
+        if (!raw || !raw.trim()) return undefined;
+        var lines = raw.split(/[\\n,]+/).map(function(s) {{ return s.trim(); }}).filter(Boolean);
+        return lines.length ? lines : undefined;
+    }}
+
+    function esc(s) {{
+        if (s == null) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }}
+
+    async function loadStatus() {{
+        var errEl = document.getElementById('loadErr');
+        errEl.style.display = 'none';
+        var bar = document.getElementById('statusBar');
+        bar.innerHTML = '';
+        try {{
+            var r = await fetch('/api/ai-gateway/status', {{ headers: authHeaders() }});
+            if (r.status === 401) {{
+                errEl.textContent = 'Unauthorized (401). Set REST API key above if MCP_API_KEYS is configured.';
+                errEl.style.display = 'block';
+                return;
+            }}
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            var d = await r.json();
+            function chip(label, val, cls) {{
+                cls = cls || '';
+                return '<div class="stat"><label>' + esc(label) + '</label><div class="val ' + cls + '">' + esc(String(val)) + '</div></div>';
+            }}
+            bar.innerHTML =
+                chip('Ensemble', d.ensemble_enabled ? 'enabled' : 'disabled', d.ensemble_enabled ? '' : 'warn') +
+                chip('Gateway host', d.gateway_display) +
+                chip('LLM API key', d.has_api_key_configured ? 'configured' : 'missing', d.has_api_key_configured ? '' : 'err') +
+                chip('Default models', (d.default_models && d.default_models.length) ? d.default_models.join(', ') : '(none)') +
+                chip('Default judge', d.default_judge);
+        }} catch (e) {{
+            errEl.textContent = 'Could not load status: ' + e.message;
+            errEl.style.display = 'block';
+        }}
+    }}
+
+    document.getElementById('runBtn').addEventListener('click', async function() {{
+        var btn = document.getElementById('runBtn');
+        var task = document.getElementById('task').value.trim();
+        if (!task) {{ alert('Enter a task'); return; }}
+        btn.disabled = true;
+        var panel = document.getElementById('resultPanel');
+        panel.style.display = 'none';
+        try {{
+            var body = {{ task: task }};
+            var models = parseModels(document.getElementById('models').value);
+            if (models) body.models = models;
+            var judge = document.getElementById('judge').value.trim();
+            if (judge) body.judge_model = judge;
+            var headers = Object.assign({{ 'Content-Type': 'application/json' }}, authHeaders());
+            var r = await fetch('/api/ensemble', {{ method: 'POST', headers: headers, body: JSON.stringify(body) }});
+            var data = await r.json().catch(function() {{ return {{}}; }});
+            if (r.status === 403) {{
+                alert(data.error || 'Forbidden: set ENSEMBLE_ENABLED=true. See docs/ai-gateway-ensemble.md');
+                return;
+            }}
+            if (r.status === 401) {{
+                alert('Unauthorized: set REST API key if MCP_API_KEYS is active.');
+                return;
+            }}
+            if (r.status === 429) {{
+                alert(data.error || 'Quota exceeded');
+                return;
+            }}
+            if (!r.ok) {{
+                alert(data.error || ('HTTP ' + r.status));
+                return;
+            }}
+            panel.style.display = 'block';
+            document.getElementById('partialBadge').style.display = data.partial ? 'inline-block' : 'none';
+            var fb = document.getElementById('finalBlock');
+            fb.innerHTML = '';
+            if (data.answer != null) {{
+                var rationale = data.rationale ? '<div class="meta">Rationale: ' + esc(data.rationale) + '</div>' : '';
+                var wm = (data.winner_model != null) ? '<div class="meta">Winner: ' + esc(data.winner_model) + (data.chosen_index != null ? ' (index ' + esc(String(data.chosen_index)) + ')' : '') + '</div>' : '';
+                var jm = data.judge_model ? '<div class="meta">Judge: ' + esc(data.judge_model) + '</div>' : '';
+                fb.innerHTML = '<div class="final"><strong>Answer</strong><div class="answer">' + esc(data.answer) + '</div>' + rationale + wm + jm + '</div>';
+            }} else if (data.error) {{
+                fb.innerHTML = '<div class="banner bad">' + esc(data.error) + '</div>';
+            }}
+            var cc = document.getElementById('candidates');
+            cc.innerHTML = '';
+            (data.candidates || []).forEach(function(c) {{
+                var div = document.createElement('div');
+                div.className = 'card';
+                var err = c.error;
+                var bodyHtml = err
+                    ? '<div class="body err">' + esc(err) + '</div>'
+                    : '<div class="body">' + esc(c.content || '') + '</div>' + (c.truncated ? '<div class="hint">truncated</div>' : '');
+                div.innerHTML = '<h3>' + esc(c.model || '?') + '</h3>' + bodyHtml;
+                cc.appendChild(div);
+            }});
+            if (data.judge_raw && !data.rationale) {{
+                var note = document.createElement('div');
+                note.className = 'hint';
+                note.textContent = 'Judge raw (preview): ' + (data.judge_raw || '').slice(0, 500);
+                fb.appendChild(note);
+            }}
+        }} catch (e) {{
+            alert('Request failed: ' + e.message);
+        }} finally {{
+            btn.disabled = false;
+        }}
+    }});
+
+    loadStatus();
+}})();
+    </script>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
 async def stripe_webhook(request: Request) -> JSONResponse:
     """POST /webhooks/stripe — Verify signature and persist subscription state."""
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -570,6 +895,7 @@ def create_api_app() -> Starlette:
             Route("/tag", api_create_tag_rest, methods=["POST"]),
             Route("/tags", api_tags, methods=["GET"]),
             Route("/usage", api_usage, methods=["GET"]),
+            Route("/ai-gateway/status", api_ai_gateway_status, methods=["GET"]),
             Route("/ensemble", api_ensemble, methods=["POST"]),
         ],
     )
