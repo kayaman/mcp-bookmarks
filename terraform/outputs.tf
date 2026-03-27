@@ -42,3 +42,18 @@ output "ecs_cluster_name" {
 output "vpc_id" {
   value = aws_vpc.main.id
 }
+
+output "dynamodb_usage_table" {
+  description = "Set DYNAMODB_USAGE_TABLE for MCP usage metering (DynamoDB mode)."
+  value       = aws_dynamodb_table.usage_events.name
+}
+
+output "dynamodb_subscriptions_table" {
+  description = "Set DYNAMODB_SUBSCRIPTIONS_TABLE for Stripe webhook persistence."
+  value       = aws_dynamodb_table.subscriptions.name
+}
+
+output "alb_dns_name" {
+  description = "Public ALB DNS when enable_alb=true (Stripe webhook URL: http://<dns>/webhooks/stripe)."
+  value       = try(aws_lb.mcp[0].dns_name, null)
+}

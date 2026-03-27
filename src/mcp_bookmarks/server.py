@@ -21,8 +21,10 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
 
 from .db import Database, DEFAULT_DB_PATH
+from .db import _coerce_sqlite_bookmark_id
 from .scraper import extract_og_metadata, extract_article_content
 from .models import OGMetadata, Tag, Bookmark
+from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
 
 
 # ── Lifespan: DB connection lifecycle ─────────────────────────────
@@ -71,6 +73,27 @@ def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context.db
 
 
+def _mcp_tenant_id() -> str:
+    return os.environ.get("DYNAMODB_ORG_ID", "default")
+
+
+def _usage_db_path() -> Path:
+    return Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
+
+
+async def _mcp_quota_block() -> str | None:
+    if not monthly_limit_enabled():
+        return None
+    ok, used, lim = await check_quota_for_backend(_usage_db_path(), _mcp_tenant_id())
+    if ok:
+        return None
+    return json.dumps({"error": "monthly_quota_exceeded", "used": used, "limit": lim})
+
+
+async def _mcp_record(event_type: str, metadata: dict | None = None) -> None:
+    await record_usage_for_backend(_usage_db_path(), event_type, _mcp_tenant_id(), metadata)
+
+
 def _bookmark_tool_id(b: Bookmark) -> int | str:
     """SQLite: integer id; DynamoDB: string UUID from save_bookmark."""
     if b.dynamo_id:
@@ -95,6 +118,8 @@ async def save_bookmark(url: str, ctx: Context) -> str:
     IMPORTANT: After saving, call get_tags() to see existing tags
     before creating new ones.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
 
     await ctx.info(f"Fetching metadata for {url}")
@@ -112,6 +137,7 @@ async def save_bookmark(url: str, ctx: Context) -> str:
         site_name=og.site_name,
     )
 
+    await _mcp_record("mcp_save_bookmark", {"url": url})
     return json.dumps(
         {
             "bookmark_id": _bookmark_tool_id(bookmark),
@@ -144,12 +170,15 @@ async def extract_content(bookmark_id: int | str, ctx: Context) -> str:
     Args:
         bookmark_id: The bookmark ID (returned by save_bookmark).
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
 
     if bookmark.content:
+        await _mcp_record("mcp_extract_content", {"bookmark_id": str(bookmark_id), "status": "already_extracted"})
         return json.dumps(
             {
                 "bookmark_id": bookmark_id,
@@ -167,6 +196,7 @@ async def extract_content(bookmark_id: int | str, ctx: Context) -> str:
         return json.dumps({"error": f"Extraction failed: {e}"})
 
     await db.set_bookmark_content(bookmark_id, article.text, article.word_count)
+    await _mcp_record("mcp_extract_content", {"bookmark_id": str(bookmark_id)})
 
     # Truncate for the response (full content is in DB)
     preview = article.text[:2000] + "..." if len(article.text) > 2000 else article.text
@@ -193,6 +223,8 @@ async def set_bookmark_body(bookmark_id: int | str, text: str, ctx: Context) -> 
     Same persistence as extract_content but no HTTP download. Use after save_bookmark when
     another tool returned the page body.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
     if not bookmark:
@@ -200,6 +232,7 @@ async def set_bookmark_body(bookmark_id: int | str, text: str, ctx: Context) -> 
     body = text or ""
     wc = len(body.split())
     await db.set_bookmark_content(bookmark_id, body, wc)
+    await _mcp_record("mcp_set_bookmark_body", {"bookmark_id": str(bookmark_id)})
     preview = body[:2000] + "..." if len(body) > 2000 else body
     return json.dumps(
         {
@@ -225,10 +258,14 @@ async def read_bookmark(bookmark_id: int | str, ctx: Context) -> str:
     Args:
         bookmark_id: The bookmark ID.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
+
+    await _mcp_record("mcp_read_bookmark", {"bookmark_id": str(bookmark_id)})
 
     result = {
         "id": bookmark.dynamo_id or bookmark.id,
@@ -273,6 +310,8 @@ async def get_tags(
     Args:
         query: Optional search filter (partial match on slug/name/description).
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
 
     if query:
@@ -322,6 +361,8 @@ async def create_tag(
         name: Human-readable label. E.g. 'Machine Learning'.
         description: Scope of this tag — what topics it covers and when to use it.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
 
     existing = await db.get_tag_by_slug(slug)
@@ -332,6 +373,7 @@ async def create_tag(
         )
 
     tag = await db.create_tag(slug=slug, name=name, description=description)
+    await _mcp_record("mcp_create_tag", {"slug": slug})
     return json.dumps(
         {"created": tag.model_dump(mode="json")},
         ensure_ascii=False,
@@ -353,6 +395,8 @@ async def tag_bookmark(
         bookmark_id: The bookmark ID (returned by save_bookmark).
         tag_slugs: List of tag slugs to assign. E.g. ['python', 'web-scraping'].
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
 
     try:
@@ -363,6 +407,7 @@ async def tag_bookmark(
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
 
+    await _mcp_record("mcp_tag_bookmark", {"bookmark_id": str(bookmark_id)})
     return json.dumps(
         {
             "bookmark_id": _bookmark_tool_id(bookmark),
@@ -389,8 +434,11 @@ async def search_bookmarks(
         tag: Filter by a specific tag slug.
         limit: Max results to return (default 20).
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     bookmarks = await db.search_bookmarks(query=query, tag=tag, limit=limit)
+    await _mcp_record("mcp_search_bookmarks", {"query": query, "tag": tag})
 
     return json.dumps(
         {
@@ -429,14 +477,19 @@ async def set_summary(
         bookmark_id: The bookmark ID.
         summary: A concise summary of the bookmark's content.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     await db.set_bookmark_summary(bookmark_id, summary)
+    await _mcp_record("mcp_set_summary", {"bookmark_id": str(bookmark_id)})
     return json.dumps({"status": "ok", "bookmark_id": bookmark_id}, ensure_ascii=False)
 
 
 @mcp.tool()
 async def get_stats(ctx: Context = None) -> str:
     """Get knowledge base statistics (total bookmarks, total tags)."""
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     stats = await db.get_stats()
     return json.dumps(stats, ensure_ascii=False)
@@ -454,10 +507,13 @@ async def delete_bookmark(bookmark_id: int | str, ctx: Context = None) -> str:
     Args:
         bookmark_id: The bookmark ID to delete.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     deleted = await db.delete_bookmark(bookmark_id)
     if not deleted:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
+    await _mcp_record("mcp_delete_bookmark", {"bookmark_id": str(bookmark_id)})
     return json.dumps({"status": "deleted", "bookmark_id": bookmark_id})
 
 
@@ -478,10 +534,13 @@ async def update_tag(
         new_name: New human-readable name (optional).
         new_description: New scope description (optional).
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     tag = await db.update_tag(slug, new_name=new_name, new_description=new_description)
     if not tag:
         return json.dumps({"error": f"Tag '{slug}' not found"})
+    await _mcp_record("mcp_update_tag", {"slug": slug})
     return json.dumps({"updated": tag.model_dump(mode="json")}, ensure_ascii=False, indent=2)
 
 
@@ -494,10 +553,13 @@ async def delete_tag(slug: str, ctx: Context = None) -> str:
     Args:
         slug: The tag slug to delete.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     deleted = await db.delete_tag(slug)
     if not deleted:
         return json.dumps({"error": f"Tag '{slug}' not found"})
+    await _mcp_record("mcp_delete_tag", {"slug": slug})
     return json.dumps({"status": "deleted", "slug": slug})
 
 
@@ -517,11 +579,14 @@ async def merge_tags(
         source_slug: The tag to merge FROM (will be deleted).
         target_slug: The tag to merge INTO (will absorb bookmarks).
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     try:
         result = await db.merge_tags(source_slug, target_slug)
     except ValueError as e:
         return json.dumps({"error": str(e)})
+    await _mcp_record("mcp_merge_tags", {"source": source_slug, "target": target_slug})
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -537,10 +602,13 @@ async def untag_bookmark(
         bookmark_id: The bookmark ID.
         tag_slugs: List of tag slugs to remove.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
     bookmark = await db.untag_bookmark(bookmark_id, tag_slugs)
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
+    await _mcp_record("mcp_untag_bookmark", {"bookmark_id": str(bookmark_id)})
     return json.dumps(
         {
             "bookmark_id": _bookmark_tool_id(bookmark),
@@ -568,6 +636,8 @@ async def export_bookmarks(
         format: Output format — 'json', 'markdown', or 'opml'.
         tag: Optional tag filter — export only bookmarks with this tag.
     """
+    if (qb := await _mcp_quota_block()):
+        return qb
     db = _get_db(ctx)
 
     if tag:
@@ -588,6 +658,7 @@ async def export_bookmarks(
                 for b in bookmarks
             ],
         }
+        await _mcp_record("mcp_export_bookmarks", {"format": format, "tag": tag})
         return json.dumps(export, ensure_ascii=False, indent=2)
 
     elif format == "markdown":
@@ -613,6 +684,7 @@ async def export_bookmarks(
                     lines.append(f"  > {b.summary}")
             lines.append("")
 
+        await _mcp_record("mcp_export_bookmarks", {"format": format, "tag": tag})
         return "\n".join(lines)
 
     elif format == "opml":
@@ -631,9 +703,104 @@ async def export_bookmarks(
                 f'type="link" category="{tags_str}"/>'
             )
         lines.extend(["  </body>", "</opml>"])
+        await _mcp_record("mcp_export_bookmarks", {"format": format, "tag": tag})
         return "\n".join(lines)
 
+    await _mcp_record("mcp_export_bookmarks", {"format": format, "error": True})
     return json.dumps({"error": f"Unknown format: {format}. Use 'json', 'markdown', or 'opml'."})
+
+
+@mcp.tool()
+async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
+    """Embed title+description+content for a bookmark (SQLite only). Requires OPENAI_API_KEY.
+
+    Stores vectors in local SQLite for semantic_search_bookmarks. Not available in DYNAMODB_MODE.
+    """
+    if os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes"):
+        return json.dumps(
+            {
+                "error": "index_bookmark_embedding is SQLite-only. Use search_bookmarks / read_bookmark in DynamoDB mode.",
+            },
+            ensure_ascii=False,
+        )
+    if (qb := await _mcp_quota_block()):
+        return qb
+    db = _get_db(ctx)
+    bookmark = await db.get_bookmark_by_id(bookmark_id)
+    if not bookmark:
+        return json.dumps({"error": f"Bookmark {bookmark_id} not found"}, ensure_ascii=False)
+    bid = _coerce_sqlite_bookmark_id(bookmark_id)
+    if bid is None:
+        return json.dumps({"error": "Expected integer bookmark id in SQLite mode."}, ensure_ascii=False)
+    parts = [bookmark.title or "", bookmark.description or "", (bookmark.content or "")[:20_000]]
+    text = "\n".join(p for p in parts if p).strip()
+    if not text:
+        return json.dumps({"error": "No text to embed; run extract_content first."}, ensure_ascii=False)
+    from .rag import embed_model, embed_texts
+
+    try:
+        vec = (await embed_texts([text]))[0]
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    model = embed_model()
+    await db.upsert_bookmark_embedding(bid, model, vec)
+    await _mcp_record("mcp_index_bookmark_embedding", {"bookmark_id": str(bid)})
+    return json.dumps(
+        {"status": "indexed", "bookmark_id": bid, "model": model, "chars_used": len(text)},
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = None) -> str:
+    """Vector search over indexed bookmarks (SQLite + OpenAI embeddings only)."""
+    if os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes"):
+        return json.dumps(
+            {
+                "error": "semantic_search_bookmarks is SQLite-only. Use search_bookmarks in DynamoDB mode.",
+            },
+            ensure_ascii=False,
+        )
+    if (qb := await _mcp_quota_block()):
+        return qb
+    db = _get_db(ctx)
+    from .rag import cosine_similarity, embed_model, embed_texts
+
+    try:
+        qv = (await embed_texts([query]))[0]
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    model = embed_model()
+    rows = await db.get_all_embeddings(model)
+    if not rows:
+        return json.dumps(
+            {
+                "results": [],
+                "hint": "No embeddings yet. Call index_bookmark_embedding per bookmark (after extract_content).",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    scored = [(bid, cosine_similarity(qv, vec)) for bid, vec in rows]
+    scored.sort(key=lambda x: -x[1])
+    top = scored[: max(1, min(limit, 50))]
+    out: list[dict] = []
+    for bid, score in top:
+        bk = await db.get_bookmark_by_id(bid)
+        if not bk:
+            continue
+        out.append(
+            {
+                "id": bk.id,
+                "url": bk.url,
+                "title": bk.title,
+                "score": round(score, 6),
+                "tags": bk.tags,
+                "summary": (bk.summary or "")[:400],
+            }
+        )
+    await _mcp_record("mcp_semantic_search_bookmarks", {"limit": limit})
+    return json.dumps({"query": query, "model": model, "total_indexed": len(rows), "results": out}, ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -746,10 +913,11 @@ def knowledge_query(question: str) -> str:
 Question: {question}
 
 Steps:
-1. **search_bookmarks** — Search with relevant keywords from the question.
-2. **read_bookmark** — Read the full content of the most relevant results.
-3. **Synthesize** — Combine information from multiple bookmarks to answer
-   the question. Cite which bookmarks (by title + URL) support each point.
+0. (SQLite only, if you previously indexed embeddings) **semantic_search_bookmarks** —
+   run this first when vectors are available; otherwise skip.
+1. **search_bookmarks** — Keyword search with terms from the question.
+2. **read_bookmark** — Read full content of the most relevant results.
+3. **Synthesize** — Combine information from multiple bookmarks. Cite bookmarks by title + URL.
 
 If the knowledge base doesn't contain enough information, say so clearly
 and suggest what kinds of bookmarks would help answer this question."""
@@ -831,7 +999,7 @@ def create_combined_app():
     from starlette.routing import Mount, Route
     from starlette.responses import RedirectResponse
 
-    from .api import create_api_app, bookmarklet_page
+    from .api import create_api_app, bookmarklet_page, stripe_webhook
 
     api_app = create_api_app()
     sse_app = mcp.sse_app()
@@ -845,6 +1013,7 @@ def create_combined_app():
         routes=[
             Route("/", root),
             Route("/bookmarklet", bookmarklet_page),
+            Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
             Mount("/api", app=api_app),
             Mount("/", app=sse_app),
         ],
@@ -862,6 +1031,7 @@ def main():
     print(f"🚀 MCP Bookmarks Server")
     print(f"   MCP SSE:     http://{host}:{port}/sse")
     print(f"   REST API:    http://{host}:{port}/api/")
+    print(f"   Stripe hook: http://{host}:{port}/webhooks/stripe")
     print(f"   Bookmarklet: http://{host}:{port}/bookmarklet")
     print()
 

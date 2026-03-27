@@ -5,12 +5,16 @@ These lightweight Starlette routes run alongside the MCP SSE server
 and provide a simple HTTP interface for the bookmarklet and other
 non-MCP clients.
 
-Endpoints:
+Endpoints (mounted at ``/api``):
     POST /api/save      — Quick save a URL (extract OG + content)
     GET  /api/stats     — Knowledge base stats
     GET  /api/bookmarks — List/search bookmarks
     GET  /api/tags      — List all tags
+    GET  /api/usage     — Monthly usage counter (when API keys configured)
     GET  /bookmarklet   — Bookmarklet installation page
+
+Webhook (mount at app root):
+    POST /webhooks/stripe — Stripe Billing events (requires STRIPE_WEBHOOK_SECRET)
 """
 
 import json
@@ -18,17 +22,45 @@ import os
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, HTMLResponse
 from starlette.routing import Route
 from starlette.middleware.cors import CORSMiddleware
 
+from .auth import api_keys_configured, require_api_key
 from .db import Database, DEFAULT_DB_PATH
 from .scraper import extract_og_metadata, extract_article_content
+from .stripe_util import verify_stripe_signature
+from .subscription_store import extract_subscription_fields, upsert_from_stripe_event
+from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
 
 
 def _get_db_path() -> Path:
     return Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
+
+
+def _effective_tenant(request: Request) -> str:
+    tid = getattr(request.state, "tenant_id", None)
+    if tid:
+        return str(tid)
+    return os.environ.get("DYNAMODB_ORG_ID", "default")
+
+
+async def _check_rest_quota(tenant: str) -> JSONResponse | None:
+    if not monthly_limit_enabled():
+        return None
+    ok, used, limit = await check_quota_for_backend(_get_db_path(), tenant)
+    if ok:
+        return None
+    return JSONResponse(
+        {"error": "monthly_quota_exceeded", "used": used, "limit": limit},
+        status_code=429,
+    )
+
+
+async def _record_rest_usage(tenant: str, event_type: str, metadata: dict | None = None) -> None:
+    await record_usage_for_backend(_get_db_path(), event_type, tenant, metadata)
 
 
 async def _db():
@@ -37,14 +69,29 @@ async def _db():
     return db
 
 
+class TenantAuthMiddleware(BaseHTTPMiddleware):
+    """Require API key when ``MCP_API_KEYS`` is set. OPTIONS passes through."""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        ok, tenant = require_api_key(request.headers)
+        if not ok:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        request.state.tenant_id = tenant
+        return await call_next(request)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────
 
 
 async def api_save(request: Request) -> JSONResponse:
-    """POST /api/save — Save a URL with OG extraction.
+    """POST /save — Save a URL with OG extraction."""
+    tenant = _effective_tenant(request)
+    blocked = await _check_rest_quota(tenant)
+    if blocked:
+        return blocked
 
-    Body: {"url": "https://..."} or form-encoded url=...
-    """
     content_type = request.headers.get("content-type", "")
 
     if "application/json" in content_type:
@@ -59,11 +106,11 @@ async def api_save(request: Request) -> JSONResponse:
 
     db = await _db()
     try:
-        # Extract OG metadata
         try:
             og = await extract_og_metadata(url)
         except Exception:
             from .models import OGMetadata
+
             og = OGMetadata(url=url)
 
         bookmark = await db.upsert_bookmark(
@@ -74,7 +121,6 @@ async def api_save(request: Request) -> JSONResponse:
             site_name=og.site_name,
         )
 
-        # Extract content in background-friendly way
         try:
             article = await extract_article_content(url)
             await db.set_bookmark_content(bookmark.id, article.text, article.word_count)
@@ -82,20 +128,24 @@ async def api_save(request: Request) -> JSONResponse:
         except Exception:
             word_count = 0
 
-        return JSONResponse({
-            "status": "saved",
-            "bookmark_id": bookmark.id,
-            "title": bookmark.title,
-            "description": bookmark.description,
-            "word_count": word_count,
-            "message": f"Saved! Connect via MCP to tag and summarize.",
-        })
+        await _record_rest_usage(tenant, "rest_bookmark_save", {"url": og.url})
+
+        return JSONResponse(
+            {
+                "status": "saved",
+                "bookmark_id": bookmark.id,
+                "title": bookmark.title,
+                "description": bookmark.description,
+                "word_count": word_count,
+                "message": f"Saved! Connect via MCP to tag and summarize.",
+            }
+        )
     finally:
         await db.close()
 
 
 async def api_stats(request: Request) -> JSONResponse:
-    """GET /api/stats — Knowledge base statistics."""
+    """GET /stats — Knowledge base statistics."""
     db = await _db()
     try:
         stats = await db.get_stats()
@@ -105,10 +155,7 @@ async def api_stats(request: Request) -> JSONResponse:
 
 
 async def api_bookmarks(request: Request) -> JSONResponse:
-    """GET /api/bookmarks — List or search bookmarks.
-
-    Query params: ?query=..., ?tag=..., ?limit=20
-    """
+    """GET /bookmarks — List or search bookmarks."""
     query = request.query_params.get("query")
     tag = request.query_params.get("tag")
     limit = int(request.query_params.get("limit", "20"))
@@ -116,43 +163,100 @@ async def api_bookmarks(request: Request) -> JSONResponse:
     db = await _db()
     try:
         bookmarks = await db.search_bookmarks(query=query, tag=tag, limit=limit)
-        return JSONResponse({
-            "total": len(bookmarks),
-            "bookmarks": [
-                {
-                    "id": b.id,
-                    "url": b.url,
-                    "title": b.title,
-                    "tags": b.tags,
-                    "summary": b.summary,
-                    "word_count": b.word_count,
-                }
-                for b in bookmarks
-            ],
-        })
+        return JSONResponse(
+            {
+                "total": len(bookmarks),
+                "bookmarks": [
+                    {
+                        "id": b.id,
+                        "url": b.url,
+                        "title": b.title,
+                        "tags": b.tags,
+                        "summary": b.summary,
+                        "word_count": b.word_count,
+                    }
+                    for b in bookmarks
+                ],
+            }
+        )
     finally:
         await db.close()
 
 
 async def api_tags(request: Request) -> JSONResponse:
-    """GET /api/tags — List all tags."""
+    """GET /tags — List all tags."""
     db = await _db()
     try:
         tags = await db.get_all_tags()
-        return JSONResponse({
-            "total": len(tags),
-            "tags": [
-                {
-                    "slug": t.slug,
-                    "name": t.name,
-                    "description": t.description,
-                    "usage_count": t.usage_count,
-                }
-                for t in tags
-            ],
-        })
+        return JSONResponse(
+            {
+                "total": len(tags),
+                "tags": [
+                    {
+                        "slug": t.slug,
+                        "name": t.name,
+                        "description": t.description,
+                        "usage_count": t.usage_count,
+                    }
+                    for t in tags
+                ],
+            }
+        )
     finally:
         await db.close()
+
+
+async def api_usage(request: Request) -> JSONResponse:
+    """GET /usage — Monthly tool/event count for the authenticated tenant."""
+    tenant = _effective_tenant(request)
+    db = await _db()
+    try:
+        n = await db.count_usage_events_month(tenant)
+    finally:
+        await db.close()
+    limit = int(os.environ.get("MCP_MONTHLY_USAGE_LIMIT", "0"))
+    return JSONResponse(
+        {
+            "tenant_id": tenant,
+            "events_this_month": n,
+            "monthly_limit": limit,
+            "limit_enforced": monthly_limit_enabled(),
+        }
+    )
+
+
+async def stripe_webhook(request: Request) -> JSONResponse:
+    """POST /webhooks/stripe — Verify signature and persist subscription state."""
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        return JSONResponse({"error": "STRIPE_WEBHOOK_SECRET not configured"}, status_code=503)
+
+    body = await request.body()
+    sig = request.headers.get("stripe-signature")
+    if not verify_stripe_signature(body, sig, secret):
+        return JSONResponse({"error": "invalid signature"}, status_code=400)
+
+    try:
+        event = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+
+    etype = event.get("type")
+    obj = event.get("data", {}).get("object")
+    if not isinstance(obj, dict):
+        return JSONResponse({"received": True, "ignored": True})
+
+    if etype in (
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    ):
+        cid, status, plan_sku, cpe = extract_subscription_fields(obj)
+        if cid:
+            await upsert_from_stripe_event(cid, status, plan_sku, cpe, obj)
+        return JSONResponse({"received": True, "type": etype})
+
+    return JSONResponse({"received": True, "ignored": etype})
 
 
 async def bookmarklet_page(request: Request) -> HTMLResponse:
@@ -160,7 +264,6 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
     host = request.headers.get("host", "localhost:8000")
     scheme = request.url.scheme
 
-    # The bookmarklet JS — minified inline
     bookmarklet_js = (
         f"javascript:void("
         f"fetch('{scheme}://{host}/api/save',"
@@ -286,20 +389,22 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
 
 
 def create_api_app() -> Starlette:
-    """Create the REST API Starlette application."""
+    """Create the REST API Starlette application (mounted at ``/api``)."""
     app = Starlette(
         routes=[
             Route("/save", api_save, methods=["POST"]),
             Route("/stats", api_stats, methods=["GET"]),
             Route("/bookmarks", api_bookmarks, methods=["GET"]),
             Route("/tags", api_tags, methods=["GET"]),
+            Route("/usage", api_usage, methods=["GET"]),
         ],
     )
-    # Enable CORS for bookmarklet cross-origin requests
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+    if api_keys_configured():
+        app.add_middleware(TenantAuthMiddleware)
     return app

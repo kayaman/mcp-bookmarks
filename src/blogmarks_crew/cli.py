@@ -31,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
         default="http://127.0.0.1:8000",
         help="Base URL of mcp-bookmarks (default: http://127.0.0.1:8000).",
     )
+    ingest_p.add_argument(
+        "--api-key",
+        default=None,
+        help="Bearer token when MCP_API_KEYS is configured on the server.",
+    )
 
     agents_p = sub.add_parser(
         "agents",
@@ -50,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         if not urls:
             print("No URLs in file.", file=sys.stderr)
             return 1
-        ok, fail = ingest_urls(urls, args.api_base)
+        ok, fail = ingest_urls(urls, args.api_base, api_key=args.api_key)
         print(f"Done: {ok} ok, {fail} failed (total {len(urls)})")
         return 0 if fail == 0 else 2
 

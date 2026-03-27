@@ -17,15 +17,19 @@ def ingest_urls(
     api_base: str,
     *,
     timeout: float = 120.0,
+    api_key: str | None = None,
 ) -> tuple[int, int]:
     """Return (ok_count, fail_count)."""
     base = api_base.rstrip("/")
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     ok = 0
     fail = 0
     with httpx.Client(timeout=timeout) as client:
         for url in urls:
             try:
-                r = client.post(f"{base}/api/save", json={"url": url})
+                r = client.post(f"{base}/api/save", json={"url": url}, headers=headers)
                 if r.is_success:
                     ok += 1
                 else:

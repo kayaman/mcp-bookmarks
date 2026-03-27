@@ -86,3 +86,15 @@ variable "budget_period_start" {
   type        = string
   default     = "2025-03-01_00:00"
 }
+
+variable "enable_alb" {
+  description = "If true, create an internet-facing ALB :80 and register ECS tasks (requires ecs_desired_count > 0)."
+  type        = bool
+  default     = false
+}
+
+variable "dynamodb_org_id" {
+  description = "Optional tenant/org id written on new bookmarks (DYNAMODB_ORG_ID on ECS tasks)."
+  type        = string
+  default     = ""
+}

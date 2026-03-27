@@ -1,5 +1,6 @@
 """Async SQLite database layer for bookmarks and tags."""
 
+import json
 import aiosqlite
 from pathlib import Path
 from datetime import datetime, timezone
@@ -49,6 +50,34 @@ CREATE TABLE IF NOT EXISTS bookmark_tags (
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_url ON bookmarks(url);
 CREATE INDEX IF NOT EXISTS idx_tags_slug     ON tags(slug);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   TEXT    DEFAULT (datetime('now')),
+    event_type   TEXT    NOT NULL,
+    tenant_id    TEXT    DEFAULT 'default',
+    metadata     TEXT    DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON usage_events(tenant_id, created_at);
+
+CREATE TABLE IF NOT EXISTS subscription_state (
+    customer_id         TEXT PRIMARY KEY,
+    status              TEXT,
+    plan_sku            TEXT,
+    current_period_end  TEXT,
+    raw_json            TEXT,
+    updated_at          TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bookmark_embeddings (
+    bookmark_id  INTEGER NOT NULL,
+    model        TEXT    NOT NULL,
+    vector_json  TEXT    NOT NULL,
+    updated_at   TEXT    DEFAULT (datetime('now')),
+    PRIMARY KEY (bookmark_id, model),
+    FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE
+);
 """
 
 
@@ -503,6 +532,77 @@ class Database:
                 for b in bookmarks
             ],
         }
+
+    # ── Usage / subscriptions / RAG (SQLite) ──────────────────────────
+
+    async def record_usage_event(
+        self, event_type: str, tenant_id: str = "default", metadata: dict | None = None
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO usage_events (event_type, tenant_id, metadata) VALUES (?, ?, ?)",
+            (event_type, tenant_id, json.dumps(metadata or {}, default=str)),
+        )
+        await self.db.commit()
+
+    async def count_usage_events_month(self, tenant_id: str = "default") -> int:
+        prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) as c FROM usage_events WHERE tenant_id = ? AND created_at LIKE ?",
+            (tenant_id, f"{prefix}%"),
+        )
+        row = await cursor.fetchone()
+        return int(row["c"]) if row else 0
+
+    async def upsert_subscription_state(
+        self,
+        customer_id: str,
+        status: str | None,
+        plan_sku: str | None,
+        current_period_end: str | None,
+        raw_json: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            """INSERT INTO subscription_state (customer_id, status, plan_sku, current_period_end, raw_json, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(customer_id) DO UPDATE SET
+                 status = excluded.status,
+                 plan_sku = excluded.plan_sku,
+                 current_period_end = excluded.current_period_end,
+                 raw_json = excluded.raw_json,
+                 updated_at = excluded.updated_at""",
+            (customer_id, status, plan_sku, current_period_end, raw_json, now),
+        )
+        await self.db.commit()
+
+    async def get_subscription_state(self, customer_id: str) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM subscription_state WHERE customer_id = ?", (customer_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def upsert_bookmark_embedding(
+        self, bookmark_id: int, model: str, vector: list[float]
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            """INSERT INTO bookmark_embeddings (bookmark_id, model, vector_json, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(bookmark_id, model) DO UPDATE SET
+                 vector_json = excluded.vector_json,
+                 updated_at = excluded.updated_at""",
+            (bookmark_id, model, json.dumps(vector), now),
+        )
+        await self.db.commit()
+
+    async def get_all_embeddings(self, model: str) -> list[tuple[int, list[float]]]:
+        cursor = await self.db.execute(
+            "SELECT bookmark_id, vector_json FROM bookmark_embeddings WHERE model = ?",
+            (model,),
+        )
+        rows = await cursor.fetchall()
+        return [(int(r["bookmark_id"]), json.loads(r["vector_json"])) for r in rows]
 
     # ── Private ───────────────────────────────────────────────────────
 

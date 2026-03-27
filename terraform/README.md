@@ -60,6 +60,8 @@ Sem isso, as tags existem nos recursos mas **não aparecem** nos relatórios de 
 | `security_groups.tf` | SG RDS + ECS |
 | `rds.tf` | Subnet group, PostgreSQL 16, secret URL |
 | `dynamodb.tf` | Tabelas links (stream) + tags |
+| `dynamodb_usage_subscriptions.tf` | Tabelas usage events + subscriptions (Stripe) |
+| `alb.tf` | ALB opcional (`enable_alb = true`) na frente do ECS |
 | `sqs.tf` | DLQ |
 | `lambda.tf` | IAM, função, event source mapping |
 | `ecr.tf` | Repositório imagem MCP |
@@ -73,3 +75,5 @@ Sem isso, as tags existem nos recursos mas **não aparecem** nos relatórios de 
 2. Ajustar `budget_period_start` no `terraform.tfvars` para o 1º dia do mês em que começar o acompanhamento (formato `YYYY-MM-01_00:00`).
 3. `put-secret-value` ou variável para `anthropic_api_key` (ver `variables.tf`).
 4. Build e push da imagem MCP para ECR; atualizar `mcp_container_image` e `ecs_desired_count = 1`.
+5. Opcional: `enable_alb = true` para expor HTTP :80 (health check `GET /api/stats`). Stripe: `https://<alb_dns>/webhooks/stripe` (ou terminar TLS no proxy/CDN).
+6. `dynamodb_org_id` preenche `DYNAMODB_ORG_ID` na task ECS para isolamento lógico de bookmarks.

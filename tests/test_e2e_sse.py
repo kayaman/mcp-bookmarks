@@ -93,6 +93,8 @@ async def main():
                 assert "extract_content" in tool_names
                 assert "merge_tags" in tool_names
                 assert "untag_bookmark" in tool_names
+                assert "semantic_search_bookmarks" in tool_names
+                assert "index_bookmark_embedding" in tool_names
 
                 # ── get_stats (empty DB) ──
                 result = await session.call_tool("get_stats", {})

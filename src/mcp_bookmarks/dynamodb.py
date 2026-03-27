@@ -24,6 +24,34 @@ from .models import Bookmark, Tag
 _LINKS_TABLE = os.environ.get("DYNAMODB_LINKS_TABLE", "blogmarks-links")
 _TAGS_TABLE = os.environ.get("DYNAMODB_TAGS_TABLE", "blogmarks-tags")
 _USER_ID = os.environ.get("DYNAMODB_USER_ID", "mcp-agent")
+_ORG_ID = os.environ.get("DYNAMODB_ORG_ID", "").strip() or None
+_ORG_LEGACY = os.environ.get("DYNAMODB_ORG_INCLUDE_LEGACY", "").lower() in ("1", "true", "yes")
+
+
+def _tenant_filter_expr():
+    """When DYNAMODB_ORG_ID is set, scope scans to this org (optional legacy items without attribute)."""
+    if not _ORG_ID:
+        return None
+    if _ORG_LEGACY:
+        return Attr("organization_id").eq(_ORG_ID) | Attr("organization_id").not_exists()
+    return Attr("organization_id").eq(_ORG_ID)
+
+
+def _base_link_filter():
+    fe = Attr("url").exists() & Attr("rateLimitKey").not_exists()
+    tf = _tenant_filter_expr()
+    return fe & tf if tf is not None else fe
+
+
+def _item_org_visible(item: dict) -> bool:
+    if not _ORG_ID:
+        return True
+    oid = item.get("organization_id")
+    if oid == _ORG_ID:
+        return True
+    if oid is None and _ORG_LEGACY:
+        return True
+    return False
 
 
 def _dynamo():
@@ -247,6 +275,7 @@ class DynamoDBDatabase:
                         "userId": _USER_ID,
                         "source": "mcp",
                         "sourceIp": "127.0.0.1",
+                        "organization_id": _ORG_ID,
                     }.items() if v is not None
                 },
                 ConditionExpression=Attr("id").not_exists(),
@@ -282,6 +311,8 @@ class DynamoDBDatabase:
         item = await _run(_get)
         if not item or not item.get("url"):
             return None
+        if not _item_org_visible(item):
+            return None
         return _to_bookmark(item)
 
     _MAX_AI_CONTENT_CHARS = 350_000
@@ -289,6 +320,13 @@ class DynamoDBDatabase:
     async def set_bookmark_content(self, bookmark_id: int | str, content: str, word_count: int) -> None:
         key = self._dynamo_key(bookmark_id)
         if not key:
+            return
+
+        def _peek():
+            return self._links.get_item(Key={"id": key}).get("Item")
+
+        existing = await _run(_peek)
+        if not existing or not _item_org_visible(existing):
             return
         text_body = (content or "")[: self._MAX_AI_CONTENT_CHARS]
         wc = word_count if word_count else len(text_body.split())
@@ -306,6 +344,13 @@ class DynamoDBDatabase:
     async def set_bookmark_summary(self, bookmark_id: int | str, summary: str) -> None:
         key = self._dynamo_key(bookmark_id)
         if not key:
+            return
+
+        def _peek():
+            return self._links.get_item(Key={"id": key}).get("Item")
+
+        existing = await _run(_peek)
+        if not existing or not _item_org_visible(existing):
             return
         now = datetime.now(timezone.utc).isoformat()
 
@@ -331,7 +376,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         item = await _run(_get)
-        if not item or not item.get("url"):
+        if not item or not item.get("url") or not _item_org_visible(item):
             return None
         existing = list(item.get("aiTags", []))
         merged = list(dict.fromkeys(existing + list(tag_slugs)))
@@ -358,7 +403,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         item = await _run(_get)
-        if not item or not item.get("url"):
+        if not item or not item.get("url") or not _item_org_visible(item):
             return None
         remove = set(tag_slugs)
         new_tags = [t for t in item.get("aiTags", []) if t not in remove]
@@ -381,27 +426,34 @@ class DynamoDBDatabase:
     ) -> list[Bookmark]:
         def _scan():
             kwargs: dict[str, Any] = {"Limit": limit}
+            base = _base_link_filter()
             if tag and query:
-                kwargs["FilterExpression"] = (
-                    Attr("aiTags").contains(tag) & (
+                kwargs["FilterExpression"] = base & (
+                    Attr("aiTags").contains(tag)
+                    & (
                         Attr("title").contains(query)
                         | Attr("aiSummary").contains(query)
                         | Attr("url").contains(query)
                     )
                 )
             elif tag:
-                kwargs["FilterExpression"] = Attr("aiTags").contains(tag)
+                kwargs["FilterExpression"] = base & Attr("aiTags").contains(tag)
             elif query:
-                kwargs["FilterExpression"] = (
+                kwargs["FilterExpression"] = base & (
                     Attr("title").contains(query)
                     | Attr("aiSummary").contains(query)
                     | Attr("url").contains(query)
                 )
+            else:
+                kwargs["FilterExpression"] = base
             return self._links.scan(**kwargs).get("Items", [])
 
         items = await _run(_scan)
-        # Filter out rate-limit items (no url or has rateLimitKey)
-        bookmarks = [_to_bookmark(i) for i in items if i.get("url") and not i.get("rateLimitKey")]
+        bookmarks = [
+            _to_bookmark(i)
+            for i in items
+            if i.get("url") and not i.get("rateLimitKey") and _item_org_visible(i)
+        ]
         return sorted(bookmarks, key=lambda b: str(b.created_at or ""), reverse=True)
 
     async def get_stats(self) -> dict:
@@ -418,6 +470,13 @@ class DynamoDBDatabase:
         if not key:
             return False
 
+        def _peek():
+            return self._links.get_item(Key={"id": key}).get("Item")
+
+        existing = await _run(_peek)
+        if not existing or not _item_org_visible(existing):
+            return False
+
         def _del():
             self._links.delete_item(Key={"id": key})
 
@@ -426,12 +485,10 @@ class DynamoDBDatabase:
 
     async def get_all_bookmarks(self) -> list[Bookmark]:
         def _scan():
-            return self._links.scan(
-                FilterExpression=Attr("url").exists() & Attr("rateLimitKey").not_exists()
-            ).get("Items", [])
+            return self._links.scan(FilterExpression=_base_link_filter()).get("Items", [])
 
         items = await _run(_scan)
-        return [_to_bookmark(i) for i in items]
+        return [_to_bookmark(i) for i in items if _item_org_visible(i)]
 
     async def get_full_export(self) -> dict:
         bookmarks = await self.get_all_bookmarks()

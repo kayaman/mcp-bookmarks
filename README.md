@@ -35,8 +35,8 @@ Supports two storage backends:
 ┌───────────────────────────────────────────────────────────────┐
 │  MCP Bookmarks Server (FastMCP + SSE + REST API)              │
 │                                                               │
-│  server.py    → 14 tools, 4 prompts, 2 resources             │
-│  api.py       → REST: /api/save, /api/bookmarks, /api/tags   │
+│  server.py    → MCP tools, prompts, resources                   │
+│  api.py       → REST: /api/save, /api/usage, …                │
 │  scraper.py   → OG extraction + trafilatura article parsing   │
 │  models.py    → Pydantic: OGMetadata, ArticleContent, Tag …  │
 │  db.py        → aiosqlite SQLite backend                      │
@@ -139,6 +139,8 @@ With `uv run mcp-bookmarks` running, ingest many URLs from a file (one per line;
 
 ```bash
 uv run blogmarks-crew ingest --urls-file urls.txt --api-base http://127.0.0.1:8000
+# With REST API keys enabled:
+uv run blogmarks-crew ingest --urls-file urls.txt --api-key "$MCP_API_KEY"
 ```
 
 Optional **CrewAI** topic clustering (install extras, set your LLM API key as required by CrewAI, e.g. `OPENAI_API_KEY`):
@@ -150,7 +152,21 @@ uv run blogmarks-crew agents --urls-file urls.txt
 
 ### AWS (Terraform)
 
-Infrastructure-as-code for DynamoDB, RDS (pgvector-ready), Lambda, ECS, budgets, and cost tags lives in [`terraform/`](terraform/). Pre-production stacks can be destroyed and recreated with `terraform destroy` / `apply` while you have no customer data to preserve.
+Infrastructure-as-code for DynamoDB (links, tags, **usage events**, **subscriptions**), RDS (pgvector-ready), Lambda, ECS, optional **ALB** (`enable_alb`), budgets, and cost tags lives in [`terraform/`](terraform/). Outputs include `alb_dns_name` when the load balancer is enabled. Stripe targets `POST /webhooks/stripe` on the same host as the MCP server.
+
+### REST: auth, usage, billing hook
+
+- **`MCP_API_KEYS`** — When set, `/api/*` requires `Authorization: Bearer <key>` or `X-API-Key`. Keys may map to tenants as `key:org-id` (see [`auth.py`](src/mcp_bookmarks/auth.py)).
+- **`GET /api/usage`** — Monthly event count for the authenticated tenant (SQLite `usage_events`; pair with `MCP_MONTHLY_USAGE_LIMIT` for quotas).
+- **`POST /webhooks/stripe`** — Configure in Stripe with **`STRIPE_WEBHOOK_SECRET`**; subscription snapshots go to SQLite and/or **`DYNAMODB_SUBSCRIPTIONS_TABLE`**.
+
+### Semantic search (SQLite + OpenAI)
+
+With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_bookmark_embedding`** after **`extract_content`**, then **`semantic_search_bookmarks`**. Vectors live in the local DB table `bookmark_embeddings`.
+
+### Rust fetch CLI (optional)
+
+[`rust/blogmarks-fetch/`](rust/blogmarks-fetch/) — `cargo run --release -- https://example.com` prints JSON (status, HTML size). Extend with readability-style extraction for batch ingest.
 
 ### Deploying this package (per release)
 
@@ -183,6 +199,8 @@ The Blogmarks **PWA** (separate front-end repo / deployment) can use the [Web Sh
 | `delete_tag(slug)` | Delete a tag from all bookmarks |
 | `merge_tags(source, target)` | Merge duplicate tags |
 | `export_bookmarks(format?, tag?)` | Export as JSON, Markdown, or OPML |
+| `index_bookmark_embedding(bookmark_id)` | SQLite only: OpenAI embedding for title+description+content |
+| `semantic_search_bookmarks(query, limit?)` | SQLite only: cosine similarity over stored embeddings |
 
 ## Prompts
 
@@ -226,6 +244,14 @@ This prevents `ml`, `ML-algorithms`, `machine_learning` from proliferating.
 | `DYNAMODB_LINKS_TABLE` | `blogmarks-links` | DynamoDB bookmark items table |
 | `DYNAMODB_TAGS_TABLE` | `blogmarks-tags` | DynamoDB tag taxonomy table |
 | `DYNAMODB_USER_ID` | `mcp-agent` | userId stamped on MCP-saved bookmarks |
+| `DYNAMODB_ORG_ID` | — | Optional org/tenant id for DynamoDB isolation + MCP usage tenant |
+| `DYNAMODB_USAGE_TABLE` | — | DynamoDB table for usage events when in cloud |
+| `DYNAMODB_SUBSCRIPTIONS_TABLE` | — | Stripe subscription rows (webhook) |
+| `MCP_API_KEYS` | — | Comma-separated REST API keys (`key` or `key:org`) |
+| `MCP_MONTHLY_USAGE_LIMIT` | `0` | Monthly quota (0 = off); enforced on MCP tools + REST save |
+| `STRIPE_WEBHOOK_SECRET` | — | `whsec_...` for `/webhooks/stripe` |
+| `OPENAI_API_KEY` | — | Embeddings for semantic search tools |
+| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding model id |
 | `AWS_DEFAULT_REGION` | `us-east-1` | AWS region for DynamoDB |
 
 ## Project Structure

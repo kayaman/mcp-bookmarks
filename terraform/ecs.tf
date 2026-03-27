@@ -103,7 +103,11 @@ resource "aws_iam_role_policy" "ecs_task_dynamo" {
         aws_dynamodb_table.links.arn,
         "${aws_dynamodb_table.links.arn}/index/*",
         aws_dynamodb_table.tags.arn,
-        "${aws_dynamodb_table.tags.arn}/index/*"
+        "${aws_dynamodb_table.tags.arn}/index/*",
+        aws_dynamodb_table.usage_events.arn,
+        "${aws_dynamodb_table.usage_events.arn}/index/*",
+        aws_dynamodb_table.subscriptions.arn,
+        "${aws_dynamodb_table.subscriptions.arn}/index/*"
       ]
     }]
   })
@@ -123,6 +127,9 @@ locals {
       { name = "DYNAMODB_MODE", value = "true" },
       { name = "DYNAMODB_LINKS_TABLE", value = aws_dynamodb_table.links.name },
       { name = "DYNAMODB_TAGS_TABLE", value = aws_dynamodb_table.tags.name },
+      { name = "DYNAMODB_USAGE_TABLE", value = aws_dynamodb_table.usage_events.name },
+      { name = "DYNAMODB_SUBSCRIPTIONS_TABLE", value = aws_dynamodb_table.subscriptions.name },
+      { name = "DYNAMODB_ORG_ID", value = var.dynamodb_org_id },
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
       { name = "MCP_HOST", value = "0.0.0.0" },
       { name = "MCP_PORT", value = tostring(var.mcp_container_port) }
@@ -158,12 +165,20 @@ resource "aws_ecs_task_definition" "mcp" {
 }
 
 resource "aws_ecs_service" "mcp" {
-  count           = var.ecs_desired_count > 0 ? 1 : 0
-  name            = "${local.prefix}-mcp"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.mcp.arn
-  desired_count   = var.ecs_desired_count
-  launch_type     = "FARGATE"
+  count             = var.ecs_desired_count > 0 ? 1 : 0
+  name              = "${local.prefix}-mcp"
+  cluster           = aws_ecs_cluster.main.id
+  task_definition   = aws_ecs_task_definition.mcp.arn
+  desired_count     = var.ecs_desired_count
+  launch_type       = "FARGATE"
+  dynamic "load_balancer" {
+    for_each = var.enable_alb ? [1] : []
+    content {
+      target_group_arn = aws_lb_target_group.mcp[0].arn
+      container_name   = "mcp-bookmarks"
+      container_port   = var.mcp_container_port
+    }
+  }
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
