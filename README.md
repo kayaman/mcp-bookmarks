@@ -201,6 +201,11 @@ The Blogmarks **PWA** (separate front-end repo / deployment) can use the [Web Sh
 | `export_bookmarks(format?, tag?)` | Export as JSON, Markdown, or OPML |
 | `index_bookmark_embedding(bookmark_id)` | SQLite only: OpenAI embedding for title+description+content |
 | `semantic_search_bookmarks(query, limit?)` | SQLite only: cosine similarity over stored embeddings |
+| `ensemble_with_judge(task, models?, judge_model?)` | Optional: N models in parallel via OpenAI-compatible **AI Gateway**, then LLM judge merges/picks best (`ENSEMBLE_ENABLED=true`) |
+
+### AI Gateway: vários modelos + juiz LLM
+
+Aponta `AI_GATEWAY_BASE_URL` (ou `OPENAI_BASE_URL`) para o teu gateway **compatível com OpenAI** (`…/v1/chat/completions`). Define `ENSEMBLE_ENABLED=true`, chave em `AI_GATEWAY_API_KEY` ou `OPENAI_API_KEY`, e `ENSEMBLE_MODELS` (lista separada por vírgulas). O MCP tool **`ensemble_with_judge`** e **`POST /api/ensemble`** (`{"task":"...","models":["a","b"],"judge_model":"..."}`) fazem N chamadas em paralelo e uma chamada de **juiz** (`JUDGE_MODEL`, default `gpt-4o-mini`) que devolve JSON com `answer`, `rationale`, `chosen_index`. Custo: **N+1** chamadas; usa também o medidor de quota se estiver ativo.
 
 ## Prompts
 
@@ -252,6 +257,11 @@ This prevents `ml`, `ML-algorithms`, `machine_learning` from proliferating.
 | `STRIPE_WEBHOOK_SECRET` | — | `whsec_...` for `/webhooks/stripe` |
 | `OPENAI_API_KEY` | — | Embeddings for semantic search tools |
 | `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding model id |
+| `ENSEMBLE_ENABLED` | `false` | `true` to allow `ensemble_with_judge` + `POST /api/ensemble` |
+| `AI_GATEWAY_BASE_URL` | — | Gateway OpenAI-compatible (e.g. `https://api.openai.com/v1`) |
+| `AI_GATEWAY_API_KEY` | — | Overrides `OPENAI_API_KEY` for ensemble calls if set |
+| `ENSEMBLE_MODELS` | — | Default comma-separated models when the tool omits `models` |
+| `JUDGE_MODEL` | `gpt-4o-mini` | Model that scores/merges candidate answers |
 | `AWS_DEFAULT_REGION` | `us-east-1` | AWS region for DynamoDB |
 
 ## Project Structure

@@ -803,6 +803,52 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
     return json.dumps({"query": query, "model": model, "total_indexed": len(rows), "results": out}, ensure_ascii=False, indent=2)
 
 
+@mcp.tool()
+async def ensemble_with_judge(
+    task: str,
+    models: str | None = None,
+    judge_model: str | None = None,
+    ctx: Context = None,
+) -> str:
+    """Run the same user task on several LLMs (OpenAI-compatible AI Gateway), then an LLM judge picks or merges the best answer.
+
+    Costs N+1 API calls. Set ``ENSEMBLE_ENABLED=true``. Gateway: ``AI_GATEWAY_BASE_URL`` or ``OPENAI_BASE_URL`` (must end with ``/v1`` or base host); auth: ``AI_GATEWAY_API_KEY`` or ``OPENAI_API_KEY``. Default models from ``ENSEMBLE_MODELS`` (comma-separated) if ``models`` is omitted. Judge defaults to ``JUDGE_MODEL`` (e.g. ``gpt-4o-mini``).
+
+    Args:
+        task: User instruction or question for all candidates.
+        models: Optional comma-separated model ids (overrides ENSEMBLE_MODELS).
+        judge_model: Optional judge model id.
+    """
+    from . import llm_ensemble as le
+
+    if not le.ensemble_enabled():
+        return json.dumps(
+            {
+                "error": "Set ENSEMBLE_ENABLED=true to enable ensemble+judge (prevents accidental spend).",
+                "hint": "Also set AI_GATEWAY_BASE_URL, API key, and ENSEMBLE_MODELS or pass models=.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    if (qb := await _mcp_quota_block()):
+        return qb
+
+    mlist = None
+    if models and models.strip():
+        mlist = [x.strip() for x in models.split(",") if x.strip()]
+
+    out = await le.run_ensemble_with_judge(
+        task,
+        models=mlist,
+        judge_model=judge_model.strip() if judge_model else None,
+    )
+    await _mcp_record(
+        "mcp_ensemble_with_judge",
+        {"ok": out.get("ok"), "n_models": len(mlist or [])},
+    )
+    return json.dumps(out, ensure_ascii=False, indent=2)
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PROMPTS — reusable interaction templates
 # ═══════════════════════════════════════════════════════════════════

@@ -11,6 +11,7 @@ Endpoints (mounted at ``/api``):
     GET  /api/bookmarks — List/search bookmarks
     GET  /api/tags      — List all tags
     GET  /api/usage     — Monthly usage counter (when API keys configured)
+    POST /api/ensemble  — Multi-model + LLM judge (requires ENSEMBLE_ENABLED=true)
     GET  /bookmarklet   — Bookmarklet installation page
 
 Webhook (mount at app root):
@@ -34,6 +35,7 @@ from .scraper import extract_og_metadata, extract_article_content
 from .stripe_util import verify_stripe_signature
 from .subscription_store import extract_subscription_fields, upsert_from_stripe_event
 from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
+from . import llm_ensemble
 
 
 def _get_db_path() -> Path:
@@ -225,6 +227,44 @@ async def api_usage(request: Request) -> JSONResponse:
     )
 
 
+async def api_ensemble(request: Request) -> JSONResponse:
+    """POST /ensemble — Parallel chat completions + judge (OpenAI-compatible gateway)."""
+    tenant = _effective_tenant(request)
+    blocked = await _check_rest_quota(tenant)
+    if blocked:
+        return blocked
+    if not llm_ensemble.ensemble_enabled():
+        return JSONResponse(
+            {"error": "Set ENSEMBLE_ENABLED=true to use this endpoint."},
+            status_code=403,
+        )
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    task = (body.get("task") or "").strip()
+    if not task:
+        return JSONResponse({"error": "Missing 'task'"}, status_code=400)
+
+    mlist = None
+    models = body.get("models")
+    if isinstance(models, list):
+        mlist = [str(x).strip() for x in models if str(x).strip()]
+    elif isinstance(models, str) and models.strip():
+        mlist = [x.strip() for x in models.split(",") if x.strip()]
+
+    jm = body.get("judge_model")
+    judge_model = str(jm).strip() if jm else None
+
+    out = await llm_ensemble.run_ensemble_with_judge(
+        task,
+        models=mlist,
+        judge_model=judge_model,
+    )
+    await _record_rest_usage(tenant, "rest_ensemble_judge", {"ok": out.get("ok")})
+    return JSONResponse(out)
+
+
 async def stripe_webhook(request: Request) -> JSONResponse:
     """POST /webhooks/stripe — Verify signature and persist subscription state."""
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -397,6 +437,7 @@ def create_api_app() -> Starlette:
             Route("/bookmarks", api_bookmarks, methods=["GET"]),
             Route("/tags", api_tags, methods=["GET"]),
             Route("/usage", api_usage, methods=["GET"]),
+            Route("/ensemble", api_ensemble, methods=["POST"]),
         ],
     )
     app.add_middleware(
