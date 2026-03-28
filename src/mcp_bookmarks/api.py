@@ -363,7 +363,10 @@ async def api_ensemble(request: Request) -> JSONResponse:
         return blocked
     if not llm_ensemble.ensemble_enabled():
         return JSONResponse(
-            {"error": "Set ENSEMBLE_ENABLED=true to use this endpoint."},
+            {
+                "error": "Set ENSEMBLE_ENABLED=true to use this endpoint.",
+                "hint": "See docs/ai-gateway-ensemble.md for configuration.",
+            },
             status_code=403,
         )
     try:
@@ -657,7 +660,10 @@ async def ai_gateway_page(request: Request) -> HTMLResponse:
             var r = await fetch('/api/ensemble', {{ method: 'POST', headers: headers, body: JSON.stringify(body) }});
             var data = await r.json().catch(function() {{ return {{}}; }});
             if (r.status === 403) {{
-                alert(data.error || 'Forbidden: set ENSEMBLE_ENABLED=true. See docs/ai-gateway-ensemble.md');
+                var msg403 = data.error || 'Forbidden: set ENSEMBLE_ENABLED=true.';
+                if (data.hint) msg403 += '\\n' + data.hint;
+                else msg403 += ' See docs/ai-gateway-ensemble.md';
+                alert(msg403);
                 return;
             }}
             if (r.status === 401) {{
