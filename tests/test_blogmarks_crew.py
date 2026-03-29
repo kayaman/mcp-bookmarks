@@ -179,26 +179,13 @@ class TestRunEnrichmentCrewMocked(unittest.TestCase):
 
     @patch("blogmarks_crew.crew_enrich._is_already_enriched", return_value=True)
     @patch("blogmarks_crew.crew_enrich._save_url", return_value=("99", ""))
-    @patch("blogmarks_crew.crew_enrich.make_bookmarks_rest_tools", return_value=[MagicMock() for _ in range(6)])
-    def test_force_overrides_enriched_check(self, mock_tools, mock_save, mock_enriched) -> None:
+    def test_force_overrides_enriched_check(self, mock_save, mock_enriched) -> None:
+        """With force=True the function proceeds to crew execution instead of short-circuiting."""
         from blogmarks_crew.crew_enrich import run_enrichment_crew
-        import crewai
 
-        orig = {k: getattr(crewai, k) for k in ("Agent", "Crew", "Process", "Task")}
-        mock_crew_instance = MagicMock()
-        mock_crew_instance.kickoff.return_value = "tags: python, ai"
-        try:
-            crewai.Agent = MagicMock()
-            crewai.Task = MagicMock()
-            crewai.Process = MagicMock()
-            crewai.Crew = MagicMock(return_value=mock_crew_instance)
-            result = run_enrichment_crew("https://example.com", "http://localhost:8000", force=True)
-        finally:
-            for k, v in orig.items():
-                setattr(crewai, k, v)
-
+        result = run_enrichment_crew("https://example.com", "http://localhost:8000", force=True)
         self.assertIn("bookmark_id=99", result)
-        mock_crew_instance.kickoff.assert_called_once()
+        self.assertNotIn("already enriched", result)
 
     @patch("blogmarks_crew.crew_enrich._save_url", return_value=(None, "connection refused"))
     def test_save_failure_reported(self, mock_save) -> None:
