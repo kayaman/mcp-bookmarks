@@ -182,15 +182,20 @@ class TestRunEnrichmentCrewMocked(unittest.TestCase):
     @patch("blogmarks_crew.crew_enrich.make_bookmarks_rest_tools", return_value=[MagicMock() for _ in range(6)])
     def test_force_overrides_enriched_check(self, mock_tools, mock_save, mock_enriched) -> None:
         from blogmarks_crew.crew_enrich import run_enrichment_crew
+        import crewai
 
+        orig = {k: getattr(crewai, k) for k in ("Agent", "Crew", "Process", "Task")}
         mock_crew_instance = MagicMock()
         mock_crew_instance.kickoff.return_value = "tags: python, ai"
-
-        with patch("crewai.Agent"), \
-             patch("crewai.Task"), \
-             patch("crewai.Process"), \
-             patch("crewai.Crew", return_value=mock_crew_instance):
+        try:
+            crewai.Agent = MagicMock()
+            crewai.Task = MagicMock()
+            crewai.Process = MagicMock()
+            crewai.Crew = MagicMock(return_value=mock_crew_instance)
             result = run_enrichment_crew("https://example.com", "http://localhost:8000", force=True)
+        finally:
+            for k, v in orig.items():
+                setattr(crewai, k, v)
 
         self.assertIn("bookmark_id=99", result)
         mock_crew_instance.kickoff.assert_called_once()
