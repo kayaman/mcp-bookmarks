@@ -43,6 +43,10 @@ from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_
 from . import llm_ensemble
 
 
+def _dynamodb_mode() -> bool:
+    return os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes")
+
+
 def _get_db_path() -> Path:
     return Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
 
@@ -71,7 +75,11 @@ async def _record_rest_usage(tenant: str, event_type: str, metadata: dict | None
 
 
 async def _db():
-    db = Database(_get_db_path())
+    if _dynamodb_mode():
+        from .dynamodb import DynamoDBDatabase
+        db = DynamoDBDatabase()
+    else:
+        db = Database(_get_db_path())
     await db.connect()
     return db
 
@@ -217,7 +225,7 @@ _MAX_BOOKMARK_CONTENT_JSON = 400_000
 
 
 async def api_get_bookmark(request: Request) -> JSONResponse:
-    """GET /bookmarks/{bookmark_id} — Full bookmark including content (SQLite)."""
+    """GET /bookmarks/{bookmark_id} — Full bookmark including content."""
     bookmark_id = request.path_params["bookmark_id"]
     db = await _db()
     try:

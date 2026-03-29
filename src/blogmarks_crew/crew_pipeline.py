@@ -28,6 +28,7 @@ def run_topic_crew(urls: list[str]) -> str:
         ),
         verbose=False,
         allow_delegation=False,
+        max_iter=10,
     )
 
     task = Task(

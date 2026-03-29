@@ -9,6 +9,11 @@ import httpx
 from .api_base_util import rest_api_prefix
 from .rest_crew_tools import make_bookmarks_rest_tools
 
+try:
+    from crewai import Agent, Crew, Process, Task
+except ImportError:
+    Agent = Crew = Process = Task = None  # type: ignore[assignment,misc]
+
 
 def _save_url(api_base: str, url: str, api_key: str | None) -> tuple[str | None, str]:
     """POST /save; return (bookmark_id_str, error_message)."""
@@ -32,19 +37,47 @@ def _save_url(api_base: str, url: str, api_key: str | None) -> tuple[str | None,
     return str(bid), ""
 
 
-def run_enrichment_crew(url: str, api_base: str, api_key: str | None = None) -> str:
-    """Save ``url``, then run Librarian + Editor agents (requires ``uv sync --extra crew`` + LLM API key)."""
+def _is_already_enriched(api_base: str, bookmark_id: str, api_key: str | None) -> bool:
+    """Return True when the bookmark already has both tags and a summary."""
+    base = rest_api_prefix(api_base)
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
-        from crewai import Agent, Crew, Process, Task
-    except ImportError as e:
-        raise ImportError("CrewAI is not installed. Run: uv sync --extra crew") from e
+        r = httpx.get(f"{base}/bookmarks/{bookmark_id}", headers=headers, timeout=60)
+        if not r.is_success:
+            return False
+        data = r.json()
+    except Exception:
+        return False
+    has_summary = bool(data.get("summary"))
+    has_tags = bool(data.get("tags"))
+    return has_summary and has_tags
+
+
+def run_enrichment_crew(
+    url: str,
+    api_base: str,
+    api_key: str | None = None,
+    *,
+    force: bool = False,
+) -> str:
+    """Save ``url``, then run Librarian + Editor agents (requires ``uv sync --extra crew`` + LLM API key).
+
+    Skips enrichment if the bookmark already has tags and a summary, unless *force* is True.
+    """
+    if Agent is None:
+        raise ImportError("CrewAI is not installed. Run: uv sync --extra crew")
 
     bid, err = _save_url(api_base, url, api_key)
     if not bid:
         return f"save_bookmark failed: {err}"
 
+    if not force and _is_already_enriched(api_base, bid, api_key):
+        return f"bookmark_id={bid} already enriched (has tags + summary). Use --force to re-enrich."
+
     tools = make_bookmarks_rest_tools(api_base, api_key)
-    t_list, t_create, t_assign, t_load, t_summary = tools
+    t_list, t_create, t_assign, t_load, t_summary, _t_fetch = tools
 
     librarian = Agent(
         role="Taxonomy librarian",
@@ -56,6 +89,7 @@ def run_enrichment_crew(url: str, api_base: str, api_key: str | None = None) -> 
         tools=[t_list, t_create, t_assign],
         verbose=False,
         allow_delegation=False,
+        max_iter=15,
     )
 
     editor = Agent(
@@ -68,6 +102,7 @@ def run_enrichment_crew(url: str, api_base: str, api_key: str | None = None) -> 
         tools=[t_load, t_summary],
         verbose=False,
         allow_delegation=False,
+        max_iter=10,
     )
 
     task_tags = Task(
@@ -100,5 +135,8 @@ def run_enrichment_crew(url: str, api_base: str, api_key: str | None = None) -> 
         process=Process.sequential,
         verbose=False,
     )
-    out = str(crew.kickoff())
+    try:
+        out = str(crew.kickoff())
+    except Exception as e:
+        return f"bookmark_id={bid}\n\nCrew execution failed: {e}"
     return f"bookmark_id={bid}\n\n{out}"
