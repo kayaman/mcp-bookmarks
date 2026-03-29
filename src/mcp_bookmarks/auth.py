@@ -11,7 +11,10 @@ When MCP_API_KEYS is unset, REST routes stay open (development default).
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .models import Tenant
 
 
 def _parse_api_key_map() -> dict[str, str]:
@@ -61,3 +64,18 @@ def require_api_key(headers: Any) -> tuple[bool, str | None]:
     if tenant is None:
         return False, None
     return True, tenant
+
+
+def resolve_tenant(headers: Any) -> "Tenant":
+    """Resolve a Tenant from request headers.
+
+    Uses the same ``MCP_API_KEYS`` map as ``require_api_key``. Falls back to
+    ``DYNAMODB_ORG_ID`` env var, then ``"default"`` for single-tenant installs.
+    Returns a ``Tenant`` regardless — never raises; callers that need to reject
+    bad keys should call ``require_api_key`` first.
+    """
+    from .models import Tenant  # local import to avoid circular dependency
+
+    _, tid = require_api_key(headers)
+    org = tid or os.environ.get("DYNAMODB_ORG_ID") or "default"
+    return Tenant(organization_id=org)

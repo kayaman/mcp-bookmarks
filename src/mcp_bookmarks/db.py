@@ -21,16 +21,19 @@ def _coerce_sqlite_bookmark_id(bookmark_id: int | str) -> int | None:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tags (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    slug        TEXT    UNIQUE NOT NULL,
+    slug        TEXT    NOT NULL,
+    tenant_id   TEXT    NOT NULL DEFAULT 'default',
     name        TEXT    NOT NULL,
     description TEXT    DEFAULT '',
     usage_count INTEGER DEFAULT 0,
-    created_at  TEXT    DEFAULT (datetime('now'))
+    created_at  TEXT    DEFAULT (datetime('now')),
+    UNIQUE (slug, tenant_id)
 );
 
 CREATE TABLE IF NOT EXISTS bookmarks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    url         TEXT    UNIQUE NOT NULL,
+    url         TEXT    NOT NULL,
+    tenant_id   TEXT    NOT NULL DEFAULT 'default',
     title       TEXT,
     description TEXT,
     image_url   TEXT,
@@ -39,7 +42,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     content     TEXT,
     word_count  INTEGER DEFAULT 0,
     created_at  TEXT    DEFAULT (datetime('now')),
-    updated_at  TEXT    DEFAULT (datetime('now'))
+    updated_at  TEXT    DEFAULT (datetime('now')),
+    UNIQUE (url, tenant_id)
 );
 
 CREATE TABLE IF NOT EXISTS bookmark_tags (
@@ -82,10 +86,15 @@ CREATE TABLE IF NOT EXISTS bookmark_embeddings (
 
 
 class Database:
-    """Async wrapper around the SQLite bookmark store."""
+    """Async wrapper around the SQLite bookmark store.
 
-    def __init__(self, db_path: Path = DEFAULT_DB_PATH):
+    Pass ``tenant_id`` to scope all reads and writes to that tenant.
+    Defaults to ``"default"`` for single-user / personal installs.
+    """
+
+    def __init__(self, db_path: Path = DEFAULT_DB_PATH, tenant_id: str = "default"):
         self.db_path = db_path
+        self.tenant_id = tenant_id
         self._db: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
@@ -100,11 +109,30 @@ class Database:
     async def _migrate(self) -> None:
         """Add columns that may not exist in older databases."""
         cursor = await self.db.execute("PRAGMA table_info(bookmarks)")
-        columns = {row["name"] for row in await cursor.fetchall()}
-        if "content" not in columns:
+        bk_cols = {row["name"] for row in await cursor.fetchall()}
+        if "content" not in bk_cols:
             await self.db.execute("ALTER TABLE bookmarks ADD COLUMN content TEXT")
-        if "word_count" not in columns:
+        if "word_count" not in bk_cols:
             await self.db.execute("ALTER TABLE bookmarks ADD COLUMN word_count INTEGER DEFAULT 0")
+        if "tenant_id" not in bk_cols:
+            await self.db.execute(
+                "ALTER TABLE bookmarks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+            )
+
+        cursor = await self.db.execute("PRAGMA table_info(tags)")
+        tag_cols = {row["name"] for row in await cursor.fetchall()}
+        if "tenant_id" not in tag_cols:
+            await self.db.execute(
+                "ALTER TABLE tags ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+            )
+
+        # Indices on tenant_id columns must be created after migration (column may be new).
+        await self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bookmarks_tenant ON bookmarks(tenant_id)"
+        )
+        await self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tags_tenant ON tags(tenant_id)"
+        )
 
     async def close(self) -> None:
         if self._db:
@@ -120,9 +148,10 @@ class Database:
     # ── Tags ──────────────────────────────────────────────────────────
 
     async def get_all_tags(self) -> list[Tag]:
-        """Return every canonical tag, ordered by usage."""
+        """Return every canonical tag for this tenant, ordered by usage."""
         cursor = await self.db.execute(
-            "SELECT * FROM tags ORDER BY usage_count DESC, name ASC"
+            "SELECT * FROM tags WHERE tenant_id = ? ORDER BY usage_count DESC, name ASC",
+            (self.tenant_id,),
         )
         rows = await cursor.fetchall()
         return [
@@ -138,12 +167,13 @@ class Database:
         ]
 
     async def search_tags(self, query: str) -> list[Tag]:
-        """Search tags by slug or name (partial match)."""
+        """Search tags by slug or name (partial match) for this tenant."""
         cursor = await self.db.execute(
             """SELECT * FROM tags
-               WHERE slug LIKE ? OR name LIKE ? OR description LIKE ?
+               WHERE tenant_id = ?
+                 AND (slug LIKE ? OR name LIKE ? OR description LIKE ?)
                ORDER BY usage_count DESC""",
-            (f"%{query}%", f"%{query}%", f"%{query}%"),
+            (self.tenant_id, f"%{query}%", f"%{query}%", f"%{query}%"),
         )
         rows = await cursor.fetchall()
         return [
@@ -159,10 +189,10 @@ class Database:
         ]
 
     async def create_tag(self, slug: str, name: str, description: str = "") -> Tag:
-        """Create a new canonical tag. Raises if slug already exists."""
+        """Create a new canonical tag for this tenant. Raises if slug already exists."""
         cursor = await self.db.execute(
-            "INSERT INTO tags (slug, name, description) VALUES (?, ?, ?)",
-            (slug, name, description),
+            "INSERT INTO tags (slug, tenant_id, name, description) VALUES (?, ?, ?, ?)",
+            (slug, self.tenant_id, name, description),
         )
         await self.db.commit()
         return Tag(
@@ -174,7 +204,9 @@ class Database:
         )
 
     async def get_tag_by_slug(self, slug: str) -> Tag | None:
-        cursor = await self.db.execute("SELECT * FROM tags WHERE slug = ?", (slug,))
+        cursor = await self.db.execute(
+            "SELECT * FROM tags WHERE slug = ? AND tenant_id = ?", (slug, self.tenant_id)
+        )
         r = await cursor.fetchone()
         if not r:
             return None
@@ -215,31 +247,31 @@ class Database:
         image_url: str | None = None,
         site_name: str | None = None,
     ) -> Bookmark:
-        """Insert or update a bookmark by URL."""
+        """Insert or update a bookmark by URL within this tenant."""
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self.db.execute(
-            """INSERT INTO bookmarks (url, title, description, image_url, site_name, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(url) DO UPDATE SET
+            """INSERT INTO bookmarks (url, tenant_id, title, description, image_url, site_name, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(url, tenant_id) DO UPDATE SET
                    title       = COALESCE(excluded.title, bookmarks.title),
                    description = COALESCE(excluded.description, bookmarks.description),
                    image_url   = COALESCE(excluded.image_url, bookmarks.image_url),
                    site_name   = COALESCE(excluded.site_name, bookmarks.site_name),
                    updated_at  = excluded.updated_at
                RETURNING *""",
-            (url, title, description, image_url, site_name, now),
+            (url, self.tenant_id, title, description, image_url, site_name, now),
         )
         r = await cursor.fetchone()
         await self.db.commit()
         return await self._row_to_bookmark(r)
 
     async def get_bookmark_by_id(self, bookmark_id: int | str) -> Bookmark | None:
-        """Retrieve a single bookmark by ID."""
+        """Retrieve a single bookmark by ID within this tenant."""
         bid = _coerce_sqlite_bookmark_id(bookmark_id)
         if bid is None:
             return None
         cursor = await self.db.execute(
-            "SELECT * FROM bookmarks WHERE id = ?", (bid,)
+            "SELECT * FROM bookmarks WHERE id = ? AND tenant_id = ?", (bid, self.tenant_id)
         )
         r = await cursor.fetchone()
         if not r:
@@ -249,13 +281,13 @@ class Database:
     async def set_bookmark_content(
         self, bookmark_id: int | str, content: str, word_count: int
     ) -> None:
-        """Store extracted article content for a bookmark."""
+        """Store extracted article content for a bookmark within this tenant."""
         bid = _coerce_sqlite_bookmark_id(bookmark_id)
         if bid is None:
             return
         await self.db.execute(
-            "UPDATE bookmarks SET content = ?, word_count = ?, updated_at = ? WHERE id = ?",
-            (content, word_count, datetime.now(timezone.utc).isoformat(), bid),
+            "UPDATE bookmarks SET content = ?, word_count = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+            (content, word_count, datetime.now(timezone.utc).isoformat(), bid, self.tenant_id),
         )
         await self.db.commit()
 
@@ -289,48 +321,54 @@ class Database:
         return await self._row_to_bookmark(r)
 
     async def set_bookmark_summary(self, bookmark_id: int | str, summary: str) -> None:
-        """Store an AI-generated summary for a bookmark."""
+        """Store an AI-generated summary for a bookmark within this tenant."""
         bid = _coerce_sqlite_bookmark_id(bookmark_id)
         if bid is None:
             return
         await self.db.execute(
-            "UPDATE bookmarks SET summary = ?, updated_at = ? WHERE id = ?",
-            (summary, datetime.now(timezone.utc).isoformat(), bid),
+            "UPDATE bookmarks SET summary = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+            (summary, datetime.now(timezone.utc).isoformat(), bid, self.tenant_id),
         )
         await self.db.commit()
 
     async def search_bookmarks(
         self, query: str | None = None, tag: str | None = None, limit: int = 20
     ) -> list[Bookmark]:
-        """Search bookmarks by text or tag."""
+        """Search bookmarks by text or tag within this tenant."""
         if tag:
             cursor = await self.db.execute(
                 """SELECT b.* FROM bookmarks b
                    JOIN bookmark_tags bt ON b.id = bt.bookmark_id
                    JOIN tags t ON bt.tag_id = t.id
-                   WHERE t.slug = ?
+                   WHERE t.slug = ? AND b.tenant_id = ?
                    ORDER BY b.updated_at DESC LIMIT ?""",
-                (tag, limit),
+                (tag, self.tenant_id, limit),
             )
         elif query:
             cursor = await self.db.execute(
                 """SELECT * FROM bookmarks
-                   WHERE title LIKE ? OR description LIKE ? OR url LIKE ?
+                   WHERE tenant_id = ?
+                     AND (title LIKE ? OR description LIKE ? OR url LIKE ?)
                    ORDER BY updated_at DESC LIMIT ?""",
-                (f"%{query}%", f"%{query}%", f"%{query}%", limit),
+                (self.tenant_id, f"%{query}%", f"%{query}%", f"%{query}%", limit),
             )
         else:
             cursor = await self.db.execute(
-                "SELECT * FROM bookmarks ORDER BY updated_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM bookmarks WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?",
+                (self.tenant_id, limit),
             )
 
         rows = await cursor.fetchall()
         return [await self._row_to_bookmark(r) for r in rows]
 
     async def get_stats(self) -> dict:
-        """Return knowledge base stats."""
-        bk = await self.db.execute("SELECT COUNT(*) as c FROM bookmarks")
-        tg = await self.db.execute("SELECT COUNT(*) as c FROM tags")
+        """Return knowledge base stats for this tenant."""
+        bk = await self.db.execute(
+            "SELECT COUNT(*) as c FROM bookmarks WHERE tenant_id = ?", (self.tenant_id,)
+        )
+        tg = await self.db.execute(
+            "SELECT COUNT(*) as c FROM tags WHERE tenant_id = ?", (self.tenant_id,)
+        )
         bk_row = await bk.fetchone()
         tg_row = await tg.fetchone()
         return {
@@ -341,12 +379,12 @@ class Database:
     # ── Management operations ─────────────────────────────────────────
 
     async def delete_bookmark(self, bookmark_id: int | str) -> bool:
-        """Delete a bookmark and its tag associations. Returns True if found."""
+        """Delete a bookmark and its tag associations within this tenant. Returns True if found."""
         bid = _coerce_sqlite_bookmark_id(bookmark_id)
         if bid is None:
             return False
         cursor = await self.db.execute(
-            "SELECT id FROM bookmarks WHERE id = ?", (bid,)
+            "SELECT id FROM bookmarks WHERE id = ? AND tenant_id = ?", (bid, self.tenant_id)
         )
         if not await cursor.fetchone():
             return False
@@ -381,7 +419,7 @@ class Database:
         new_name: str | None = None,
         new_description: str | None = None,
     ) -> Tag | None:
-        """Update a tag's name and/or description. Returns updated tag or None."""
+        """Update a tag's name and/or description within this tenant. Returns updated tag or None."""
         tag = await self.get_tag_by_slug(slug)
         if not tag:
             return None
@@ -398,16 +436,16 @@ class Database:
         if not updates:
             return tag
 
-        params.append(slug)
+        params.extend([slug, self.tenant_id])
         await self.db.execute(
-            f"UPDATE tags SET {', '.join(updates)} WHERE slug = ?",
+            f"UPDATE tags SET {', '.join(updates)} WHERE slug = ? AND tenant_id = ?",
             params,
         )
         await self.db.commit()
         return await self.get_tag_by_slug(slug)
 
     async def delete_tag(self, slug: str) -> bool:
-        """Delete a tag and remove it from all bookmarks. Returns True if found."""
+        """Delete a tag within this tenant and remove it from all bookmarks. Returns True if found."""
         tag = await self.get_tag_by_slug(slug)
         if not tag or not tag.id:
             return False
@@ -415,7 +453,9 @@ class Database:
         await self.db.execute(
             "DELETE FROM bookmark_tags WHERE tag_id = ?", (tag.id,)
         )
-        await self.db.execute("DELETE FROM tags WHERE id = ?", (tag.id,))
+        await self.db.execute(
+            "DELETE FROM tags WHERE id = ? AND tenant_id = ?", (tag.id, self.tenant_id)
+        )
         await self.db.commit()
         return True
 
@@ -497,9 +537,10 @@ class Database:
     # ── Export operations ─────────────────────────────────────────────
 
     async def get_all_bookmarks(self) -> list[Bookmark]:
-        """Return every bookmark with tags (for export)."""
+        """Return every bookmark with tags for this tenant (for export)."""
         cursor = await self.db.execute(
-            "SELECT * FROM bookmarks ORDER BY created_at ASC"
+            "SELECT * FROM bookmarks WHERE tenant_id = ? ORDER BY created_at ASC",
+            (self.tenant_id,),
         )
         rows = await cursor.fetchall()
         return [await self._row_to_bookmark(r) for r in rows]

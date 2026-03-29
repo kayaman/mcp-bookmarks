@@ -14,44 +14,19 @@ import os
 import uuid
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 
 from .models import Bookmark, Tag
 
+if TYPE_CHECKING:
+    from .models import Tenant
+
 _LINKS_TABLE = os.environ.get("DYNAMODB_LINKS_TABLE", "blogmarks-links")
 _TAGS_TABLE = os.environ.get("DYNAMODB_TAGS_TABLE", "blogmarks-tags")
-_USER_ID = os.environ.get("DYNAMODB_USER_ID", "mcp-agent")
-_ORG_ID = os.environ.get("DYNAMODB_ORG_ID", "").strip() or None
 _ORG_LEGACY = os.environ.get("DYNAMODB_ORG_INCLUDE_LEGACY", "").lower() in ("1", "true", "yes")
-
-
-def _tenant_filter_expr():
-    """When DYNAMODB_ORG_ID is set, scope scans to this org (optional legacy items without attribute)."""
-    if not _ORG_ID:
-        return None
-    if _ORG_LEGACY:
-        return Attr("organization_id").eq(_ORG_ID) | Attr("organization_id").not_exists()
-    return Attr("organization_id").eq(_ORG_ID)
-
-
-def _base_link_filter():
-    fe = Attr("url").exists() & Attr("rateLimitKey").not_exists()
-    tf = _tenant_filter_expr()
-    return fe & tf if tf is not None else fe
-
-
-def _item_org_visible(item: dict) -> bool:
-    if not _ORG_ID:
-        return True
-    oid = item.get("organization_id")
-    if oid == _ORG_ID:
-        return True
-    if oid is None and _ORG_LEGACY:
-        return True
-    return False
 
 
 def _dynamo():
@@ -93,12 +68,60 @@ def _to_bookmark(item: dict) -> Bookmark:
 
 
 class DynamoDBDatabase:
-    """Drop-in async replacement for Database that reads/writes DynamoDB."""
+    """Drop-in async replacement for Database that reads/writes DynamoDB.
 
-    def __init__(self):
+    Pass a ``Tenant`` for per-request isolation; omit (or pass ``None``) to
+    fall back to the module-level ``DYNAMODB_ORG_ID`` / ``DYNAMODB_USER_ID``
+    env vars for backward compatibility with single-tenant deployments.
+    """
+
+    def __init__(self, tenant: "Tenant | None" = None):
+        from .models import Tenant as _Tenant  # avoid circular at module level
+
+        if tenant is None:
+            org_id = os.environ.get("DYNAMODB_ORG_ID", "").strip() or None
+            user_id = os.environ.get("DYNAMODB_USER_ID", "mcp-agent")
+            tenant = _Tenant(organization_id=org_id or "default", user_id=user_id)
+
+        self._tenant = tenant
         db = _dynamo()
         self._links = db.Table(_LINKS_TABLE)
         self._tags = db.Table(_TAGS_TABLE)
+
+    # ── Per-instance tenant helpers ────────────────────────────────
+
+    def _org_id(self) -> str | None:
+        """Return organization_id if it's a real org, else None (meaning 'all')."""
+        org = self._tenant.organization_id
+        return org if org and org != "default" else None
+
+    def _user_id(self) -> str:
+        return self._tenant.user_id or os.environ.get("DYNAMODB_USER_ID", "mcp-agent")
+
+    def _tenant_filter_expr(self):
+        """Scope scans to this tenant's org (optional legacy items without attribute)."""
+        org_id = self._org_id()
+        if not org_id:
+            return None
+        if _ORG_LEGACY:
+            return Attr("organization_id").eq(org_id) | Attr("organization_id").not_exists()
+        return Attr("organization_id").eq(org_id)
+
+    def _base_link_filter(self):
+        fe = Attr("url").exists() & Attr("rateLimitKey").not_exists()
+        tf = self._tenant_filter_expr()
+        return fe & tf if tf is not None else fe
+
+    def _item_org_visible(self, item: dict) -> bool:
+        org_id = self._org_id()
+        if not org_id:
+            return True
+        oid = item.get("organization_id")
+        if oid == org_id:
+            return True
+        if oid is None and _ORG_LEGACY:
+            return True
+        return False
 
     async def connect(self) -> None:
         pass  # DynamoDB is serverless
@@ -261,6 +284,9 @@ class DynamoDBDatabase:
         now = datetime.now(timezone.utc).isoformat()
         bk_id = str(uuid.uuid4())
 
+        org_id = self._org_id()
+        user_id = self._user_id()
+
         def _put():
             self._links.put_item(
                 Item={
@@ -272,10 +298,10 @@ class DynamoDBDatabase:
                         "image_url": image_url,
                         "site_name": site_name,
                         "savedAt": now,
-                        "userId": _USER_ID,
+                        "userId": user_id,
                         "source": "mcp",
                         "sourceIp": "127.0.0.1",
-                        "organization_id": _ORG_ID,
+                        "organization_id": org_id,
                     }.items() if v is not None
                 },
                 ConditionExpression=Attr("id").not_exists(),
@@ -311,7 +337,7 @@ class DynamoDBDatabase:
         item = await _run(_get)
         if not item or not item.get("url"):
             return None
-        if not _item_org_visible(item):
+        if not self._item_org_visible(item):
             return None
         return _to_bookmark(item)
 
@@ -326,7 +352,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         existing = await _run(_peek)
-        if not existing or not _item_org_visible(existing):
+        if not existing or not self._item_org_visible(existing):
             return
         text_body = (content or "")[: self._MAX_AI_CONTENT_CHARS]
         wc = word_count if word_count else len(text_body.split())
@@ -350,7 +376,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         existing = await _run(_peek)
-        if not existing or not _item_org_visible(existing):
+        if not existing or not self._item_org_visible(existing):
             return
         now = datetime.now(timezone.utc).isoformat()
 
@@ -376,7 +402,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         item = await _run(_get)
-        if not item or not item.get("url") or not _item_org_visible(item):
+        if not item or not item.get("url") or not self._item_org_visible(item):
             return None
         existing = list(item.get("aiTags", []))
         merged = list(dict.fromkeys(existing + list(tag_slugs)))
@@ -403,7 +429,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         item = await _run(_get)
-        if not item or not item.get("url") or not _item_org_visible(item):
+        if not item or not item.get("url") or not self._item_org_visible(item):
             return None
         remove = set(tag_slugs)
         new_tags = [t for t in item.get("aiTags", []) if t not in remove]
@@ -426,7 +452,7 @@ class DynamoDBDatabase:
     ) -> list[Bookmark]:
         def _scan():
             kwargs: dict[str, Any] = {"Limit": limit}
-            base = _base_link_filter()
+            base = self._base_link_filter()
             if tag and query:
                 kwargs["FilterExpression"] = base & (
                     Attr("aiTags").contains(tag)
@@ -452,7 +478,7 @@ class DynamoDBDatabase:
         bookmarks = [
             _to_bookmark(i)
             for i in items
-            if i.get("url") and not i.get("rateLimitKey") and _item_org_visible(i)
+            if i.get("url") and not i.get("rateLimitKey") and self._item_org_visible(i)
         ]
         return sorted(bookmarks, key=lambda b: str(b.created_at or ""), reverse=True)
 
@@ -474,7 +500,7 @@ class DynamoDBDatabase:
             return self._links.get_item(Key={"id": key}).get("Item")
 
         existing = await _run(_peek)
-        if not existing or not _item_org_visible(existing):
+        if not existing or not self._item_org_visible(existing):
             return False
 
         def _del():
@@ -485,10 +511,10 @@ class DynamoDBDatabase:
 
     async def get_all_bookmarks(self) -> list[Bookmark]:
         def _scan():
-            return self._links.scan(FilterExpression=_base_link_filter()).get("Items", [])
+            return self._links.scan(FilterExpression=self._base_link_filter()).get("Items", [])
 
         items = await _run(_scan)
-        return [_to_bookmark(i) for i in items if _item_org_visible(i)]
+        return [_to_bookmark(i) for i in items if self._item_org_visible(i)]
 
     async def get_full_export(self) -> dict:
         bookmarks = await self.get_all_bookmarks()

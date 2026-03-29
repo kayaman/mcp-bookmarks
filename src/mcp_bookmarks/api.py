@@ -74,12 +74,14 @@ async def _record_rest_usage(tenant: str, event_type: str, metadata: dict | None
     await record_usage_for_backend(_get_db_path(), event_type, tenant, metadata)
 
 
-async def _db():
+async def _db(request: Request | None = None):
+    tenant_id = _effective_tenant(request) if request is not None else "default"
     if _dynamodb_mode():
         from .dynamodb import DynamoDBDatabase
-        db = DynamoDBDatabase()
+        from .models import Tenant
+        db = DynamoDBDatabase(tenant=Tenant(organization_id=tenant_id))
     else:
-        db = Database(_get_db_path())
+        db = Database(_get_db_path(), tenant_id=tenant_id)
     await db.connect()
     return db
 
@@ -119,7 +121,7 @@ async def api_save(request: Request) -> JSONResponse:
     if not url:
         return JSONResponse({"error": "Missing 'url' parameter"}, status_code=400)
 
-    db = await _db()
+    db = await _db(request)
     try:
         try:
             og = await extract_og_metadata(url)
@@ -161,7 +163,7 @@ async def api_save(request: Request) -> JSONResponse:
 
 async def api_stats(request: Request) -> JSONResponse:
     """GET /stats — Knowledge base statistics."""
-    db = await _db()
+    db = await _db(request)
     try:
         stats = await db.get_stats()
         return JSONResponse(stats)
@@ -175,7 +177,7 @@ async def api_bookmarks(request: Request) -> JSONResponse:
     tag = request.query_params.get("tag")
     limit = int(request.query_params.get("limit", "20"))
 
-    db = await _db()
+    db = await _db(request)
     try:
         bookmarks = await db.search_bookmarks(query=query, tag=tag, limit=limit)
         return JSONResponse(
@@ -200,7 +202,7 @@ async def api_bookmarks(request: Request) -> JSONResponse:
 
 async def api_tags(request: Request) -> JSONResponse:
     """GET /tags — List all tags."""
-    db = await _db()
+    db = await _db(request)
     try:
         tags = await db.get_all_tags()
         return JSONResponse(
@@ -227,7 +229,7 @@ _MAX_BOOKMARK_CONTENT_JSON = 400_000
 async def api_get_bookmark(request: Request) -> JSONResponse:
     """GET /bookmarks/{bookmark_id} — Full bookmark including content."""
     bookmark_id = request.path_params["bookmark_id"]
-    db = await _db()
+    db = await _db(request)
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
         if not bm:
@@ -260,7 +262,7 @@ async def api_create_tag_rest(request: Request) -> JSONResponse:
             {"error": "slug and name are required"},
             status_code=400,
         )
-    db = await _db()
+    db = await _db(request)
     try:
         existing = await db.get_tag_by_slug(slug)
         if existing:
@@ -298,7 +300,7 @@ async def api_bookmark_summary(request: Request) -> JSONResponse:
     summary = body.get("summary")
     if summary is None or not isinstance(summary, str):
         return JSONResponse({"error": "summary must be a string"}, status_code=400)
-    db = await _db()
+    db = await _db(request)
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
         if not bm:
@@ -327,7 +329,7 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
             {"error": "tag_slugs must be a list of strings"},
             status_code=400,
         )
-    db = await _db()
+    db = await _db(request)
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
         if not bm:
@@ -347,7 +349,7 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
 async def api_usage(request: Request) -> JSONResponse:
     """GET /usage — Monthly tool/event count for the authenticated tenant."""
     tenant = _effective_tenant(request)
-    db = await _db()
+    db = await _db(request)
     try:
         n = await db.count_usage_events_month(tenant)
     finally:
