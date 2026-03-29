@@ -8,6 +8,23 @@ resource "aws_dynamodb_table" "links" {
     type = "S"
   }
 
+  attribute {
+    name = "organization_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "savedAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "orgId-savedAt-index"
+    hash_key        = "organization_id"
+    range_key       = "savedAt"
+    projection_type = "ALL"
+  }
+
   stream_enabled   = true
   stream_view_type = "NEW_IMAGE"
 

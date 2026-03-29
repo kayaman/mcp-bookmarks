@@ -71,3 +71,14 @@ class BookmarkCreateResult(BaseModel):
     bookmark: Bookmark
     og_metadata: OGMetadata
     message: str = "Bookmark saved. Use get_tags to see existing tags before tagging."
+
+
+class Tenant(BaseModel):
+    """Per-request tenant context resolved from API key or JWT.
+
+    In single-tenant / personal mode, organization_id defaults to ``"default"``.
+    """
+
+    organization_id: str
+    user_id: str | None = None
+    scopes: list[str] = []

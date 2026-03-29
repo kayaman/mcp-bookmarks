@@ -33,6 +33,7 @@ from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_
 @dataclass
 class AppContext:
     db: Database
+    tenant_id: str = "default"
 
 
 @asynccontextmanager
@@ -41,16 +42,32 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     Set DYNAMODB_MODE=true to use DynamoDB (blogmarks-links / blogmarks-tags)
     instead of local SQLite.
+
+    Tenant is resolved once at startup from DYNAMODB_ORG_ID (or MCP_API_KEYS
+    when a single static key is configured). For multi-tenant MCP deployments,
+    run one server instance per tenant and set MCP_API_KEYS=key:org-id.
     """
-    if os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes"):
+    from .auth import require_api_key
+    from .models import Tenant
+
+    dynamo_mode = os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes")
+    db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
+
+    # Resolve tenant once for the lifetime of this MCP server process.
+    # Use a synthetic header dict so require_api_key can parse MCP_API_KEYS.
+    mcp_key = os.environ.get("MCP_STATIC_API_KEY", "")
+    _ok, tid = require_api_key({"authorization": f"Bearer {mcp_key}"} if mcp_key else {})
+    tenant_id = tid or os.environ.get("DYNAMODB_ORG_ID", "default")
+    tenant = Tenant(organization_id=tenant_id)
+
+    if dynamo_mode:
         from .dynamodb import DynamoDBDatabase
-        db = DynamoDBDatabase()
+        db = DynamoDBDatabase(tenant=tenant)
     else:
-        db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
-        db = Database(db_path)
+        db = Database(db_path, tenant_id=tenant_id)
     await db.connect()
     try:
-        yield AppContext(db=db)
+        yield AppContext(db=db, tenant_id=tenant_id)
     finally:
         await db.close()
 
@@ -73,7 +90,12 @@ def _get_db(ctx: Context) -> Database:
     return ctx.request_context.lifespan_context.db
 
 
-def _mcp_tenant_id() -> str:
+def _mcp_tenant_id(ctx: Context | None = None) -> str:
+    if ctx is not None:
+        try:
+            return ctx.request_context.lifespan_context.tenant_id
+        except AttributeError:
+            pass
     return os.environ.get("DYNAMODB_ORG_ID", "default")
 
 
@@ -975,29 +997,24 @@ and suggest what kinds of bookmarks would help answer this question."""
 
 
 @mcp.resource("bookmarks://taxonomy")
-async def taxonomy_resource() -> str:
+async def taxonomy_resource(ctx: Context) -> str:
     """The complete tag taxonomy as a reference document.
 
     LLMs can load this as context to understand the full
     scope of the knowledge base before making decisions.
     """
-    db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
-    db = Database(db_path)
-    await db.connect()
-    try:
-        tags = await db.get_all_tags()
-        stats = await db.get_stats()
-    finally:
-        await db.close()
+    db = _get_db(ctx)
+    tags = await db.get_all_tags()
+    stats = await db.get_stats()
 
     lines = [
-        f"# Bookmark Knowledge Base Taxonomy",
-        f"",
+        "# Bookmark Knowledge Base Taxonomy",
+        "",
         f"Total bookmarks: {stats['total_bookmarks']}",
         f"Total tags: {stats['total_tags']}",
-        f"",
-        f"## Tags (by usage)",
-        f"",
+        "",
+        "## Tags (by usage)",
+        "",
     ]
     for t in tags:
         lines.append(f"- **{t.slug}** ({t.usage_count} uses): {t.description or 'No description'}")
@@ -1006,16 +1023,11 @@ async def taxonomy_resource() -> str:
 
 
 @mcp.resource("bookmarks://recent/{count}")
-async def recent_bookmarks_resource(count: str) -> str:
+async def recent_bookmarks_resource(count: str, ctx: Context) -> str:
     """Recent bookmarks as a reference document."""
     limit = min(int(count), 50)
-    db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
-    db = Database(db_path)
-    await db.connect()
-    try:
-        bookmarks = await db.search_bookmarks(limit=limit)
-    finally:
-        await db.close()
+    db = _get_db(ctx)
+    bookmarks = await db.search_bookmarks(limit=limit)
 
     lines = [f"# Recent Bookmarks (last {limit})", ""]
     for b in bookmarks:
