@@ -177,15 +177,26 @@ class TestRunEnrichmentCrewMocked(unittest.TestCase):
         self.assertIn("already enriched", result)
         self.assertIn("99", result)
 
+    @patch("blogmarks_crew.crew_enrich.Process")
+    @patch("blogmarks_crew.crew_enrich.Task")
+    @patch("blogmarks_crew.crew_enrich.Agent")
+    @patch("blogmarks_crew.crew_enrich.make_bookmarks_rest_tools", return_value=[MagicMock() for _ in range(6)])
     @patch("blogmarks_crew.crew_enrich._is_already_enriched", return_value=True)
     @patch("blogmarks_crew.crew_enrich._save_url", return_value=("99", ""))
-    def test_force_overrides_enriched_check(self, mock_save, mock_enriched) -> None:
-        """With force=True the function proceeds to crew execution instead of short-circuiting."""
+    def test_force_overrides_enriched_check(
+        self, mock_save, mock_enriched, mock_tools, mock_agent, mock_task, mock_process
+    ) -> None:
+        """With force=True the function proceeds to crew execution, bypassing idempotency check."""
         from blogmarks_crew.crew_enrich import run_enrichment_crew
 
-        result = run_enrichment_crew("https://example.com", "http://localhost:8000", force=True)
+        mock_crew_instance = MagicMock()
+        mock_crew_instance.kickoff.return_value = "tags applied"
+        with patch("blogmarks_crew.crew_enrich.Crew", return_value=mock_crew_instance):
+            result = run_enrichment_crew("https://example.com", "http://localhost:8000", force=True)
+
         self.assertIn("bookmark_id=99", result)
         self.assertNotIn("already enriched", result)
+        mock_crew_instance.kickoff.assert_called_once()
 
     @patch("blogmarks_crew.crew_enrich._save_url", return_value=(None, "connection refused"))
     def test_save_failure_reported(self, mock_save) -> None:
