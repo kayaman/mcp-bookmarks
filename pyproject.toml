@@ -1,6 +1,6 @@
 [project]
 name = "mcp-bookmarks"
-version = "0.4.1"
+version = "0.5.0"
 description = "MCP server for intelligent bookmark management with AI-powered tagging"
 readme = "README.md"
 requires-python = ">=3.11"

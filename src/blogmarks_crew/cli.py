@@ -38,6 +38,35 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Bearer token when MCP_API_KEYS is configured on the server.",
     )
+    ingest_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-save URLs even if they already exist (default: upsert is already idempotent).",
+    )
+    ingest_p.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Process URLs in batches of this size (default: 10).",
+    )
+    ingest_p.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="Seconds to wait between batches (default: 1.0).",
+    )
+    ingest_p.add_argument(
+        "--max-cost",
+        type=float,
+        default=None,
+        help="Estimated max USD cost; warns and asks for confirmation before proceeding.",
+    )
+    ingest_p.add_argument(
+        "--failures-file",
+        type=Path,
+        default=None,
+        help="Append failed URLs to this file for later retry.",
+    )
 
     agents_p = sub.add_parser(
         "agents",
@@ -65,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Bearer token when MCP_API_KEYS is set on the server.",
     )
+    enrich_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-enrich even if the bookmark already has tags and a summary.",
+    )
 
     topics_p = sub.add_parser(
         "suggest-topics",
@@ -85,7 +119,27 @@ def main(argv: list[str] | None = None) -> int:
         if not urls:
             print("No URLs in file.", file=sys.stderr)
             return 1
-        ok, fail = ingest_urls(urls, args.api_base, api_key=args.api_key)
+
+        if args.max_cost is not None:
+            est_cost_per_item = 0.003
+            est_total = len(urls) * est_cost_per_item
+            if est_total > args.max_cost:
+                print(
+                    f"Estimated cost ~${est_total:.2f} ({len(urls)} items × ~${est_cost_per_item}/item) "
+                    f"exceeds --max-cost ${args.max_cost:.2f}. Aborting.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"[cost] estimated ~${est_total:.2f} for {len(urls)} items (limit: ${args.max_cost:.2f})")
+
+        ok, fail = ingest_urls(
+            urls,
+            args.api_base,
+            api_key=args.api_key,
+            batch_size=args.batch_size,
+            delay=args.delay,
+            failures_file=args.failures_file,
+        )
         print(f"Done: {ok} ok, {fail} failed (total {len(urls)})")
         return 0 if fail == 0 else 2
 
@@ -108,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         from .crew_enrich import run_enrichment_crew
 
         try:
-            out = run_enrichment_crew(args.url, args.api_base, api_key=args.api_key)
+            out = run_enrichment_crew(args.url, args.api_base, api_key=args.api_key, force=args.force)
         except ImportError as e:
             print(e, file=sys.stderr)
             return 1

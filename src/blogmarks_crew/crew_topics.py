@@ -44,6 +44,7 @@ def run_topic_suggest_crew(bookmark_id: str, api_base: str, api_key: str | None 
         ),
         verbose=False,
         allow_delegation=False,
+        max_iter=10,
     )
 
     task = Task(
