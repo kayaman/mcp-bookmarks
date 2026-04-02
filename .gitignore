@@ -9,3 +9,4 @@ terraform/.build/
 .env
 # Local MCP secrets (copy from .cursor/mcp.json.example)
 .cursor/mcp.json
+presentation/node_modules/

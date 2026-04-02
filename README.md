@@ -290,6 +290,7 @@ mcp-bookmarks/
 ├── pyproject.toml           # Dependencies (includes boto3) and entrypoint
 ├── compose.yaml             # Podman/Docker compose
 ├── Containerfile            # Multi-stage container build
+├── presentation/            # Slidev deck (`npm run dev` — see presentation/README.md)
 ├── docs/
 │   ├── product-positioning.md   # Product boundary (vertical-first hybrid)
 │   ├── production-readiness.md  # Auth, billing, quotas, RAG deployment notes
