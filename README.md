@@ -6,6 +6,16 @@ Supports two storage backends:
 - **SQLite** (default) — local `~/.mcp-bookmarks/bookmarks.db`
 - **DynamoDB** (`DYNAMODB_MODE=true`) — connects to the live [blogmarks](https://blogmarks.dev) AWS tables, sharing data with the PWA
 
+## Product direction
+
+This repo is positioned as a **hybrid** product: **bookmark-native RAG and capture** (MCP + REST) is the primary wedge; generic “upload any corpus” RAG-as-a-service is **out of scope** until an optional HTTP retrieve API is built on top of the same auth/usage stack. Semantic search is **full-featured in SQLite**; **DynamoDB mode** still uses keyword search for retrieval until a cloud vector pipeline exists.
+
+| Document | Purpose |
+|----------|---------|
+| [`docs/product-positioning.md`](docs/product-positioning.md) | Vertical vs horizontal boundary (decision record) |
+| [`docs/production-readiness.md`](docs/production-readiness.md) | What is wired (auth, quotas, Stripe) and what to verify in production |
+| [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md) | Chunking, embedding model, vector store options for blogmarks/DynamoDB |
+
 ## Architecture
 
 ```
@@ -169,7 +179,7 @@ Infrastructure-as-code for DynamoDB (links, tags, **usage events**, **subscripti
 
 ### Semantic search (SQLite + OpenAI)
 
-With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_bookmark_embedding`** after **`extract_content`**, then **`semantic_search_bookmarks`**. Vectors live in the local DB table `bookmark_embeddings`.
+With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_bookmark_embedding`** after **`extract_content`**, then **`semantic_search_bookmarks`**. Vectors live in the local DB table `bookmark_embeddings`. For **DynamoDB / blogmarks**, semantic index design (chunking, vector store) is specified in [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md)—not yet implemented in code.
 
 ### Rust fetch CLI (optional)
 
@@ -280,6 +290,10 @@ mcp-bookmarks/
 ├── pyproject.toml           # Dependencies (includes boto3) and entrypoint
 ├── compose.yaml             # Podman/Docker compose
 ├── Containerfile            # Multi-stage container build
+├── docs/
+│   ├── product-positioning.md   # Product boundary (vertical-first hybrid)
+│   ├── production-readiness.md  # Auth, billing, quotas, RAG deployment notes
+│   └── dynamodb-rag-design.md # Cloud vector pipeline (future implementation)
 ├── tests/
 │   ├── test_smoke.py        # Core DB operations
 │   ├── test_api.py          # REST API
