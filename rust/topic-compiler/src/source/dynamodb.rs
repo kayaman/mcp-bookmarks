@@ -71,9 +71,15 @@ fn item_to_bookmark(item: &HashMap<String, AttributeValue>) -> Option<Bookmark> 
     let saved_at: DateTime<Utc> = item
         .get("savedAt")
         .and_then(|a| a.as_s().ok())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .and_then(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map_err(|e| {
+                    tracing::warn!(bookmark_id = %id, raw = %s, err = %e, "unparseable savedAt; using UNIX_EPOCH");
+                })
+                .ok()
+        })
         .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now);
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is valid"));
 
     Some(Bookmark {
         id,

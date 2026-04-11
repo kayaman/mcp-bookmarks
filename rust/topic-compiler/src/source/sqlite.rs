@@ -1,7 +1,6 @@
 use super::Bookmark;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rusqlite::Connection;
 use std::path::PathBuf;
 
 pub async fn load(only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
@@ -11,12 +10,21 @@ pub async fn load(only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".mcp-bookmarks/bookmarks.db")
         });
+    let only_tag = only_tag.map(|s| s.to_string());
 
-    let conn = Connection::open(&db_path)
+    tokio::task::spawn_blocking(move || load_blocking(&db_path, only_tag.as_deref()))
+        .await
+        .context("sqlite task panicked")?
+}
+
+fn load_blocking(db_path: &std::path::Path, only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
+    use rusqlite::Connection;
+
+    let conn = Connection::open(db_path)
         .with_context(|| format!("opening sqlite db at {}", db_path.display()))?;
 
-    // Matches the schema in src/mcp_bookmarks/db.py (bookmarks + bookmark_tags + tags).
-    // Adjust the column names here if the Python schema diverges.
+    // Matches the schema in src/mcp_bookmarks/db.py:
+    //   bookmark_tags(bookmark_id, tag_id) — tag_id references tags(id).
     let sql = r#"
         SELECT
             b.id,
@@ -28,7 +36,7 @@ pub async fn load(only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
             b.created_at
         FROM bookmarks b
         LEFT JOIN bookmark_tags bt ON bt.bookmark_id = b.id
-        LEFT JOIN tags t ON t.slug = bt.tag_slug
+        LEFT JOIN tags t ON t.id = bt.tag_id
         WHERE b.content IS NOT NULL AND b.content != ''
         GROUP BY b.id
     "#;
@@ -59,6 +67,7 @@ pub async fn load(only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
                 continue;
             }
         }
+        let saved_at = parse_ts(&id, &created_at);
         out.push(Bookmark {
             id,
             url,
@@ -66,19 +75,20 @@ pub async fn load(only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
             ai_summary: summary,
             ai_content: content,
             ai_tags: tags,
-            saved_at: parse_ts(&created_at),
+            saved_at,
         });
     }
 
     Ok(out)
 }
 
-fn parse_ts(s: &str) -> DateTime<Utc> {
+fn parse_ts(id: &str, s: &str) -> DateTime<Utc> {
     if let Ok(d) = DateTime::parse_from_rfc3339(s) {
         return d.with_timezone(&Utc);
     }
     if let Ok(n) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         return DateTime::<Utc>::from_naive_utc_and_offset(n, Utc);
     }
-    Utc::now()
+    tracing::warn!(bookmark_id = %id, raw = %s, "unparseable created_at; using UNIX_EPOCH");
+    DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is valid")
 }
