@@ -20,6 +20,8 @@ pub async fn load(backend: &str, only_tag: Option<&str>) -> Result<Vec<Bookmark>
     match backend {
         "sqlite" => sqlite::load(only_tag).await,
         "dynamodb" => dynamodb::load(only_tag).await,
-        other => Err(anyhow!("unknown source backend: {other}")),
+        other => Err(anyhow!(
+            "unknown source backend: {other}. Allowed values: sqlite, dynamodb"
+        )),
     }
 }
