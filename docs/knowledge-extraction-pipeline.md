@@ -61,7 +61,7 @@ export ANTHROPIC_API_KEY=...
 cd rust/topic-compiler
 
 # against the live DynamoDB corpus
-DYNAMODB_MODE=true AWS_DEFAULT_REGION=us-east-1 \
+AWS_DEFAULT_REGION=us-east-1 \
   cargo run --release -- compile \
     --source dynamodb \
     --out ../../../blogmarks/wiki/src/content/topics
