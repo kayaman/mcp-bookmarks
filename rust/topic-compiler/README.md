@@ -16,7 +16,7 @@ cargo run --release -- compile \
   --out ../../../blogmarks/wiki/src/content/topics
 
 # against the live blogmarks DynamoDB corpus
-DYNAMODB_MODE=true AWS_DEFAULT_REGION=us-east-1 \
+AWS_DEFAULT_REGION=us-east-1 \
   cargo run --release -- compile \
     --source dynamodb \
     --out ../../../blogmarks/wiki/src/content/topics
