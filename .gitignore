@@ -10,3 +10,7 @@ terraform/.build/
 # Local MCP secrets (copy from .cursor/mcp.json.example)
 .cursor/mcp.json
 presentation/node_modules/
+
+# Rust build artifacts
+rust/*/target/
+rust/topic-compiler/Cargo.lock
