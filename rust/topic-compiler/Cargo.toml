@@ -1,0 +1,21 @@
+[package]
+name = "topic-compiler"
+version = "0.1.0"
+edition = "2021"
+description = "LLM compiler that turns a bookmark corpus into an Astro topic wiki (sage-wiki style)"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-dynamodb = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1"
