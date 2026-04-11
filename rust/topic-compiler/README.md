@@ -1,6 +1,6 @@
 # topic-compiler
 
-sage-wiki-style LLM compiler that turns the bookmark corpus (SQLite or DynamoDB)
+A sage-wiki-style LLM compiler that turns the bookmark corpus (SQLite or DynamoDB)
 into an Astro content collection of interlinked topic articles.
 
 See [`../../docs/knowledge-extraction-pipeline.md`](../../docs/knowledge-extraction-pipeline.md) for the full design.
