@@ -98,3 +98,16 @@ variable "dynamodb_org_id" {
   type        = string
   default     = ""
 }
+
+variable "ai_gateway_url" {
+  description = "Base URL of ai-gateway-rs for LLM ensemble calls."
+  type        = string
+  default     = ""
+}
+
+variable "gateway_api_key" {
+  description = "API key for ai-gateway-rs. Required when ai_gateway_url is set."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

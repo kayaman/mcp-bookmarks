@@ -132,7 +132,9 @@ locals {
       { name = "DYNAMODB_ORG_ID", value = var.dynamodb_org_id },
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
       { name = "MCP_HOST", value = "0.0.0.0" },
-      { name = "MCP_PORT", value = tostring(var.mcp_container_port) }
+      { name = "MCP_PORT", value = tostring(var.mcp_container_port) },
+      { name = "AI_GATEWAY_BASE_URL", value = var.ai_gateway_url },
+      { name = "AI_GATEWAY_API_KEY", value = var.gateway_api_key }
     ]
     secrets = [
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn }
