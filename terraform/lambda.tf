@@ -110,10 +110,10 @@ resource "aws_lambda_function" "processor" {
 
   environment {
     variables = {
-      LINKS_TABLE         = aws_dynamodb_table.links.name
-      TAGS_TABLE          = aws_dynamodb_table.tags.name
-      ANTHROPIC_API_KEY   = var.anthropic_api_key
-      AWS_DEFAULT_REGION  = var.aws_region
+      LINKS_TABLE        = aws_dynamodb_table.links.name
+      TAGS_TABLE         = aws_dynamodb_table.tags.name
+      ANTHROPIC_API_KEY  = var.anthropic_api_key
+      AWS_DEFAULT_REGION = var.aws_region
     }
   }
 

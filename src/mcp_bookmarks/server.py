@@ -1046,10 +1046,11 @@ async def recent_bookmarks_resource(count: str, ctx: Context) -> str:
 
 
 def create_combined_app():
-    """Create a Starlette app that serves both MCP SSE and the REST API.
+    """Create a Starlette app that serves both MCP transports and the REST API.
 
     Routes:
-        /sse, /messages/  → MCP protocol (SSE transport)
+        /sse, /messages/  → MCP SSE transport (Claude Code, Cursor, mcp-remote)
+        /mcp              → MCP Streamable HTTP transport (ChatGPT custom connectors)
         /api/*            → REST API (bookmarklet, browser clients)
         /bookmarklet      → Bookmarklet installation page
         /ai-gateway       → AI Gateway ensemble + judge test UI
@@ -1062,20 +1063,35 @@ def create_combined_app():
 
     api_app = create_api_app()
     sse_app = mcp.sse_app()
+    # streamable_http_app() lazily initializes mcp._session_manager, which we
+    # need to start as a lifespan context so its anyio task group is running.
+    streamable_app = mcp.streamable_http_app()
 
     async def root(request):
         return RedirectResponse("/bookmarklet")
 
-    # Order matters: specific routes first, SSE mount last as catch-all
-    # The SSE app only handles /sse and /messages/* internally
+    @asynccontextmanager
+    async def _lifespan(app):
+        """Run the StreamableHTTP session manager for the lifetime of the app."""
+        async with mcp.session_manager.run():
+            yield
+
+    # Both MCP transport apps register their routes internally:
+    #   /mcp       — Streamable HTTP (ChatGPT custom connectors)
+    #   /sse       — SSE GET endpoint (Claude Code, Cursor)
+    #   /messages/ — SSE POST endpoint
+    # Spreading them directly into the parent router avoids conflicting catch-all
+    # mounts while still keeping both transports alive.
     app = Starlette(
+        lifespan=_lifespan,
         routes=[
             Route("/", root),
             Route("/bookmarklet", bookmarklet_page),
             Route("/ai-gateway", ai_gateway_page),
             Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
             Mount("/api", app=api_app),
-            Mount("/", app=sse_app),
+            *streamable_app.routes,  # Route(path='/mcp', ...)
+            *sse_app.routes,          # Route(path='/sse', ...) + Mount(path='/messages', ...)
         ],
     )
     return app
@@ -1089,11 +1105,12 @@ def main():
     host = os.environ.get("MCP_HOST", "0.0.0.0")
 
     print(f"🚀 MCP Bookmarks Server")
-    print(f"   MCP SSE:     http://{host}:{port}/sse")
-    print(f"   REST API:    http://{host}:{port}/api/")
-    print(f"   Stripe hook: http://{host}:{port}/webhooks/stripe")
-    print(f"   Bookmarklet: http://{host}:{port}/bookmarklet")
-    print(f"   AI Gateway:  http://{host}:{port}/ai-gateway")
+    print(f"   MCP SSE:          http://{host}:{port}/sse")
+    print(f"   MCP Streamable:   http://{host}:{port}/mcp")
+    print(f"   REST API:         http://{host}:{port}/api/")
+    print(f"   Stripe hook:      http://{host}:{port}/webhooks/stripe")
+    print(f"   Bookmarklet:      http://{host}:{port}/bookmarklet")
+    print(f"   AI Gateway:       http://{host}:{port}/ai-gateway")
     print()
 
     app = create_combined_app()

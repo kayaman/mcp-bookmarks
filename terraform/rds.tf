@@ -28,7 +28,7 @@ resource "aws_db_instance" "pgvector" {
   skip_final_snapshot        = true
   publicly_accessible        = false
   deletion_protection        = false
-  backup_retention_period      = var.environment == "prod" ? 7 : 1
+  backup_retention_period    = var.environment == "prod" ? 7 : 1
   auto_minor_version_upgrade = true
 
   tags = merge(local.extra_tags, {

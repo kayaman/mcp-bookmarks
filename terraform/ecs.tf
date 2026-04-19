@@ -137,7 +137,8 @@ locals {
       { name = "AI_GATEWAY_API_KEY", value = var.gateway_api_key }
     ]
     secrets = [
-      { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn }
+      { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
+      { name = "MCP_API_KEYS", valueFrom = aws_secretsmanager_secret.mcp_api_keys.arn }
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -167,12 +168,12 @@ resource "aws_ecs_task_definition" "mcp" {
 }
 
 resource "aws_ecs_service" "mcp" {
-  count             = var.ecs_desired_count > 0 ? 1 : 0
-  name              = "${local.prefix}-mcp"
-  cluster           = aws_ecs_cluster.main.id
-  task_definition   = aws_ecs_task_definition.mcp.arn
-  desired_count     = var.ecs_desired_count
-  launch_type       = "FARGATE"
+  count           = var.ecs_desired_count > 0 ? 1 : 0
+  name            = "${local.prefix}-mcp"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.mcp.arn
+  desired_count   = var.ecs_desired_count
+  launch_type     = "FARGATE"
   dynamic "load_balancer" {
     for_each = var.enable_alb ? [1] : []
     content {

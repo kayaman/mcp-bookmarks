@@ -1,4 +1,6 @@
-# Optional public ALB in front of Fargate MCP tasks (HTTP :80).
+# Public ALB in front of Fargate MCP tasks.
+# Listens on :443 (HTTPS, ACM cert) with :80 redirecting to HTTPS.
+# idle_timeout is 300s to keep SSE long-polls alive.
 
 resource "aws_security_group" "alb" {
   count       = var.enable_alb ? 1 : 0
@@ -7,9 +9,17 @@ resource "aws_security_group" "alb" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "HTTP"
+    description = "HTTP (redirects to HTTPS)"
     from_port   = 80
     to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -46,6 +56,8 @@ resource "aws_lb" "mcp" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb[0].id]
   subnets            = aws_subnet.public[*].id
+  # 300s keeps SSE connections alive through ALB idle timeout
+  idle_timeout = 300
 
   tags = merge(local.extra_tags, {
     Component = "alb"
@@ -81,6 +93,25 @@ resource "aws_lb_listener" "mcp_http" {
   load_balancer_arn = aws_lb.mcp[0].arn
   port              = 80
   protocol          = "HTTP"
+
+  # Redirect all HTTP traffic to HTTPS
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "mcp_https" {
+  count             = var.enable_alb ? 1 : 0
+  load_balancer_arn = aws_lb.mcp[0].arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate_validation.mcp[0].certificate_arn
 
   default_action {
     type             = "forward"

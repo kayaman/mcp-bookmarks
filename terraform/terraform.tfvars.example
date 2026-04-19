@@ -19,3 +19,12 @@ mcp_container_image       = "public.ecr.aws/docker/library/nginx:alpine"
 # Prefer: export TF_VAR_anthropic_api_key="sk-ant-..."
 anthropic_api_key         = "REPLACE_ME"
 enable_lambda_processor   = true
+
+# Public MCP endpoint (enable for production demo)
+# enable_alb        = true
+# ecs_desired_count = 1
+# mcp_hostname      = "mcp.blogmarks.dev"
+# route53_zone_id   = "Z0123456789ABCDEFGHIJ"  # your blogmarks.dev hosted zone
+# mcp_api_keys      = "demo-key-1,demo-key-2:org-id"  # TF_VAR_mcp_api_keys recommended
+# ai_gateway_url    = ""
+# gateway_api_key   = ""

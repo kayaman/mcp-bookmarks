@@ -18,7 +18,7 @@ output "sqs_dlq_url" {
 
 output "lambda_function_name" {
   description = "Lambda processor (empty if enable_lambda_processor=false)."
-  value         = try(aws_lambda_function.processor[0].function_name, null)
+  value       = try(aws_lambda_function.processor[0].function_name, null)
 }
 
 output "rds_endpoint" {
@@ -54,6 +54,11 @@ output "dynamodb_subscriptions_table" {
 }
 
 output "alb_dns_name" {
-  description = "Public ALB DNS when enable_alb=true (Stripe webhook URL: http://<dns>/webhooks/stripe)."
+  description = "Raw ALB DNS name (use mcp_public_url for the canonical HTTPS endpoint)."
   value       = try(aws_lb.mcp[0].dns_name, null)
+}
+
+output "mcp_public_url" {
+  description = "Public HTTPS URL for the MCP server (SSE: /sse, Streamable HTTP: /mcp, REST: /api/)."
+  value       = var.enable_alb ? "https://${var.mcp_hostname}" : null
 }

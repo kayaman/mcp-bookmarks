@@ -108,6 +108,13 @@ podman compose up -d
 
 ## Connecting Clients
 
+Two transports are exposed on the same server port:
+
+| Transport | Path | Clients |
+|---|---|---|
+| **SSE** | `/sse` | Claude Desktop, Claude Code CLI, Cursor IDE, mcp-remote |
+| **Streamable HTTP** | `/mcp` | ChatGPT custom connectors, HTTP-native MCP clients |
+
 ### Claude Desktop (`claude_desktop_config.json`)
 
 ```json
@@ -127,12 +134,32 @@ podman compose up -d
 claude mcp add --transport sse bookmarks http://localhost:8000/sse
 ```
 
+### Cursor (`.cursor/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "blogmarks": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
+    }
+  }
+}
+```
+
+### ChatGPT Custom Connector (Streamable HTTP)
+
+Settings → Connectors → Custom → URL: `http://localhost:8000/mcp`
+
+ChatGPT requires the Streamable HTTP transport (`/mcp`). The SSE endpoint (`/sse`) will not connect from ChatGPT.
+
 ### MCP Inspector (debugging)
 
 ```bash
 uv run mcp-bookmarks &
 npx -y @modelcontextprotocol/inspector
 # Connect to http://localhost:8000/sse
+# Or http://localhost:8000/mcp for Streamable HTTP
 ```
 
 ### O’Reilly + Bright Data + bookmarks (multi-MCP)

@@ -47,7 +47,7 @@ Optional: **`set_bookmark_body`** when another tool (Bright Data, Tavily, …) a
 
 # Who it’s for
 
-- **Developers** using **Claude Desktop**, **Claude Code**, **Cursor**, or any MCP client over **SSE**
+- **Developers** using **Claude Code**, **Cursor**, **ChatGPT**, or any MCP client
 - Teams that want **one** curated link store **inside** agent workflows
 - Users of **[blogmarks.dev](https://blogmarks.dev)** who want the **same data** from the assistant (`DYNAMODB_MODE=true`)
 
@@ -58,21 +58,132 @@ Optional: **`set_bookmark_body`** when another tool (Bright Data, Tavily, …) a
 ```mermaid
 flowchart TB
   subgraph clients [MCP clients]
-    C[Claude_Cursor_etc]
+    CC[Claude_Code_SSE]
+    CUR[Cursor_SSE]
+    CGP[ChatGPT_StreamableHTTP]
   end
   subgraph server [mcp-bookmarks]
-    S[SSE_plus_REST]
+    SSE[SSE_sse]
+    SH[StreamableHTTP_mcp]
   end
   subgraph storage [Storage]
     L[(SQLite_default)]
     D[(DynamoDB_blogmarks)]
   end
-  C -->|SSE| S
-  S --> L
-  S --> D
+  CC -->|SSE| SSE
+  CUR -->|SSE| SSE
+  CGP -->|HTTP| SH
+  SSE --> L
+  SSE --> D
+  SH --> L
+  SH --> D
 ```
 
-Same tools; **SQLite** for local-only, **DynamoDB** for live Blogmarks tables.
+Same 19 tools across **both transports**; **SQLite** for local-only, **DynamoDB** for live Blogmarks tables.
+
+---
+
+# Live on production
+
+**`https://mcp.blogmarks.dev`**
+
+```mermaid
+flowchart LR
+  subgraph clients [Demo clients]
+    cc[Claude_Code]
+    cur[Cursor]
+    cgpt[ChatGPT]
+  end
+  subgraph aws [AWS us-east-1]
+    r53[Route53]
+    alb[ALB_443_ACM]
+    ecs[ECS_Fargate]
+    ddb[(DynamoDB)]
+  end
+  cc -->|"SSE /sse"| r53
+  cur -->|"SSE /sse"| r53
+  cgpt -->|"HTTP /mcp"| r53
+  r53 --> alb
+  alb --> ecs
+  ecs -->|DYNAMODB_MODE=true| ddb
+```
+
+ECS Fargate · ACM TLS · `MCP_API_KEYS` in Secrets Manager
+
+---
+
+# Demo flow (5 minutes)
+
+Same steps across all three clients — compare UX, not behavior:
+
+| Step | Tool / Resource | Proof |
+|------|-----------------|-------|
+| 1 | `save_bookmark(url)` | UUID returned → DynamoDB write |
+| 2 | Resource `bookmarks://taxonomy` | Tag list with descriptions |
+| 3 | Prompt `save_and_tag(url)` | Full pipeline: extract → tag → summarize |
+| 4 | `search_bookmarks(query="agents")` | New item appears in results |
+| 5 | Open blogmarks.dev | Same item in the PWA → shared tables |
+
+---
+
+# Client 1 — Claude Code
+
+```bash
+export BLOGMARKS_MCP_KEY="<demo-token>"
+
+claude mcp add --transport sse blogmarks \
+  https://mcp.blogmarks.dev/sse \
+  --header "Authorization: Bearer $BLOGMARKS_MCP_KEY"
+```
+
+Transport: **SSE** (`/sse`)  
+19 tools · 4 prompts · 2 resources exposed immediately
+
+```bash
+# Smoke check
+curl -s https://mcp.blogmarks.dev/api/stats \
+  -H "Authorization: Bearer $BLOGMARKS_MCP_KEY"
+# → {"total_bookmarks": N, "total_tags": M}
+```
+
+---
+
+# Client 2 — Cursor IDE
+
+`.cursor/mcp.json` (project or global):
+
+```json
+{
+  "mcpServers": {
+    "blogmarks": {
+      "type": "sse",
+      "url": "https://mcp.blogmarks.dev/sse",
+      "headers": {
+        "Authorization": "Bearer ${env:BLOGMARKS_MCP_KEY}"
+      }
+    }
+  }
+}
+```
+
+`Cmd+Shift+P` → **MCP: Reload Servers** → confirm 19 tools  
+`${env:BLOGMARKS_MCP_KEY}` keeps the token out of committed files
+
+---
+
+# Client 3 — ChatGPT Custom Connector
+
+**Settings → Connectors → Add custom connector**
+
+| Field | Value |
+|-------|-------|
+| URL | `https://mcp.blogmarks.dev/mcp` |
+| Auth | Bearer token → `<demo-token>` |
+
+Transport: **Streamable HTTP** (`/mcp`)  
+ChatGPT cannot use `/sse` — you must use `/mcp`
+
+> Requires ChatGPT Plus / Pro / Team plan
 
 ---
 
@@ -139,20 +250,33 @@ Product positioning: `docs/product-positioning.md`.
 
 ---
 
-# Try it
+# Try it now
+
+**Production endpoint (live):**
 
 ```bash
-uv sync
-uv run mcp-bookmarks
+# SSE — Claude Code, Cursor
+curl -N -H "Accept: text/event-stream" \
+     -H "Authorization: Bearer $BLOGMARKS_MCP_KEY" \
+     https://mcp.blogmarks.dev/sse
+
+# Claude Code
+claude mcp add --transport sse blogmarks \
+  https://mcp.blogmarks.dev/sse \
+  --header "Authorization: Bearer $BLOGMARKS_MCP_KEY"
 ```
 
-Connect MCP client to **`http://localhost:8000/sse`** (or your host/port).
+**ChatGPT:** Settings → Connectors → `https://mcp.blogmarks.dev/mcp`
+
+**Local dev:**
+
+```bash
+uv sync && uv run mcp-bookmarks
+# → http://localhost:8000/sse  (SSE)
+# → http://localhost:8000/mcp  (Streamable HTTP)
+```
 
 - **Site:** [blogmarks.dev](https://blogmarks.dev)  
-- **Source:** [github.com/kayaman/mcp-bookmarks](https://github.com/kayaman/mcp-bookmarks)  
-
-```text
-claude mcp add --transport sse bookmarks http://localhost:8000/sse
-```
+- **Docs:** [docs/demo/](https://github.com/kayaman/mcp-bookmarks/tree/main/docs/demo)  
 
 **Thank you.** Questions welcome.

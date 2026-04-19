@@ -88,9 +88,28 @@ variable "budget_period_start" {
 }
 
 variable "enable_alb" {
-  description = "If true, create an internet-facing ALB :80 and register ECS tasks (requires ecs_desired_count > 0)."
+  description = "If true, create an internet-facing ALB with HTTPS :443 (ACM cert) and HTTP→HTTPS redirect. Requires ecs_desired_count > 0."
   type        = bool
   default     = false
+}
+
+variable "mcp_hostname" {
+  description = "Public hostname for the MCP server (e.g. mcp.blogmarks.dev). Used for ACM cert and Route 53 alias."
+  type        = string
+  default     = "mcp.blogmarks.dev"
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 Hosted Zone ID for mcp_hostname. Required when enable_alb=true."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_api_keys" {
+  description = "Comma-separated bearer tokens for MCP_API_KEYS (e.g. 'key1,key2:org-id'). Stored in Secrets Manager."
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 variable "dynamodb_org_id" {
