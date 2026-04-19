@@ -11,6 +11,9 @@ terraform/.build/
 .cursor/mcp.json
 presentation/node_modules/
 
+# Terraform secrets — never commit
+terraform/terraform.tfvars
+
 # Rust build artifacts
 rust/*/target/
 rust/topic-compiler/Cargo.lock

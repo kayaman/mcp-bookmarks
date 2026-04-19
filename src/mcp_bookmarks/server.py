@@ -82,6 +82,9 @@ mcp = FastMCP(
         "tagging to reuse existing tags and avoid duplicates."
     ),
     lifespan=app_lifespan,
+    # Use MCP_HOST from env so DNS-rebinding protection is not auto-enabled
+    # for the 127.0.0.1 default when deployed behind an ALB.
+    host=os.environ.get("MCP_HOST", "0.0.0.0"),
 )
 
 

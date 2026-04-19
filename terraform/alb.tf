@@ -80,7 +80,8 @@ resource "aws_lb_target_group" "mcp" {
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 30
-    matcher             = "200"
+    # 401 means the server is alive and auth middleware is active
+    matcher = "200,401"
   }
 
   tags = merge(local.extra_tags, {
