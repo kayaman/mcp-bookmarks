@@ -28,3 +28,17 @@ enable_lambda_processor   = true
 # mcp_api_keys      = "demo-key-1,demo-key-2:org-id"  # TF_VAR_mcp_api_keys recommended
 # ai_gateway_url    = ""
 # gateway_api_key   = ""
+
+# ── Blogmarks PWA traffic (Cognito JWT auth) ────────────────────────
+# Enables BearerAuthMiddleware on /mcp /sse /messages. Required for PWA users.
+# mcp_bearer_auth        = true
+# cognito_user_pool_id   = "us-east-1_xxxxxxxxx"
+# cognito_client_id      = "xxxxxxxxxxxxxxxxxxxx"
+# cognito_region         = "us-east-1"
+# mcp_connections_table  = "blogmarks-mcp-connections"  # owned by the blogmarks CDK
+
+# ── Share the blogmarks app's bookmark store ────────────────────────
+# When set, mcp-bookmarks reads/writes the existing production tables
+# instead of the empty terraform-managed blogmarks-prod-* tables.
+# links_table_override = "blogmarks-links"
+# tags_table_override  = "blogmarks-tags"

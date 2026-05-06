@@ -130,3 +130,49 @@ variable "gateway_api_key" {
   sensitive   = true
   default     = ""
 }
+
+# ── Cognito JWT verification (PWA traffic) ──────────────────────────
+
+variable "cognito_user_pool_id" {
+  description = "AWS Cognito User Pool ID that mints PWA ID tokens. When set together with cognito_client_id and mcp_bearer_auth=true, the BearerAuthMiddleware validates Cognito JWTs against this pool's JWKS. Empty disables Cognito auth (fall back to bm_v1_* tokens only)."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_client_id" {
+  description = "AWS Cognito User Pool App Client ID. Becomes the `aud` claim that JWTs are checked against."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_region" {
+  description = "AWS region for the Cognito User Pool (used to build the JWKS URL)."
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "mcp_connections_table" {
+  description = "DynamoDB table holding bm_v1_* scoped tokens (issued by the read-mcp Lambda's /mcp/connections). Empty disables scoped-token validation."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_bearer_auth" {
+  description = "Enable BearerAuthMiddleware on the combined app. When true, /mcp /sse /messages require a valid Cognito JWT or bm_v1_* token. Public paths (/health, /, /bookmarklet, /ai-gateway, /webhooks/stripe, /api/*) always pass through."
+  type        = bool
+  default     = false
+}
+
+# ── Override DynamoDB table names (use existing blogmarks app tables) ──
+
+variable "links_table_override" {
+  description = "If set, use this table name instead of the terraform-managed blogmarks-prod-links. Set to 'blogmarks-links' to share data with the blogmarks app's existing bookmark store."
+  type        = string
+  default     = ""
+}
+
+variable "tags_table_override" {
+  description = "If set, use this table name instead of blogmarks-prod-tags. Set to 'blogmarks-tags' to share the tag taxonomy with the blogmarks app."
+  type        = string
+  default     = ""
+}
