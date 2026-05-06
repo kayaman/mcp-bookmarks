@@ -50,20 +50,58 @@ def _to_tag(item: dict) -> Tag:
 
 
 def _to_bookmark(item: dict) -> Bookmark:
+    """Map a DDB item to a ``Bookmark``.
+
+    DDB items written by the blogmarks Lambda use camelCase
+    (``ogTitle``, ``ogDescription``, ``ogImage``, ``ogSiteName``).
+    Items written by mcp-bookmarks before v0.10.0 use snake_case
+    (``description``, ``image_url``, ``site_name``). This reads
+    camelCase preferentially with a snake_case fallback so both shapes
+    surface correctly.
+    """
+    og_title = item.get("ogTitle")
+    og_description = item.get("ogDescription")
+    og_image = item.get("ogImage")
+    og_site_name = item.get("ogSiteName")
+    legacy_description = item.get("description")
+    legacy_image_url = item.get("image_url")
+    legacy_site_name = item.get("site_name")
+    ai_summary = item.get("aiSummary")
+    ai_content = item.get("aiContent")
+    ai_word_count = int(item.get("aiWordCount", 0))
+    ai_tags_list = list(item.get("aiTags", []))
     return Bookmark(
         id=None,  # no integer id in DynamoDB
         dynamo_id=item.get("id"),
         url=item["url"],
-        title=item.get("title") or item.get("url"),
-        description=item.get("description") or item.get("aiSummary"),
-        image_url=item.get("image_url"),
-        site_name=item.get("site_name"),
-        summary=item.get("aiSummary"),
-        content=item.get("aiContent"),
-        word_count=int(item.get("aiWordCount", 0)) or None,
-        tags=list(item.get("aiTags", [])),
+        title=og_title or item.get("title") or item.get("url"),
+        # snake_case (back-compat for tools that still consume them):
+        description=og_description or legacy_description or ai_summary,
+        image_url=og_image or legacy_image_url,
+        site_name=og_site_name or legacy_site_name,
+        summary=ai_summary,
+        content=ai_content,
+        word_count=ai_word_count or None,
+        tags=ai_tags_list,
         created_at=item.get("savedAt"),
         updated_at=item.get("aiProcessedAt") or item.get("savedAt"),
+        # camelCase (what the Blogmarks PWA reads):
+        og_title=og_title,
+        og_description=og_description,
+        og_image=og_image,
+        og_site_name=og_site_name,
+        ai_summary=ai_summary,
+        ai_tags=ai_tags_list,
+        ai_image=item.get("aiImage"),
+        ai_content=ai_content,
+        ai_word_count=ai_word_count,
+        ai_status=item.get("aiStatus"),
+        ai_error=item.get("aiError"),
+        bookmark_type=item.get("bookmarkType"),
+        bookmark_type_confidence=item.get("bookmarkTypeConfidence"),
+        original_url=item.get("originalUrl"),
+        saved_at=item.get("savedAt"),
+        source=item.get("source"),
     )
 
 
@@ -311,7 +349,21 @@ class DynamoDBDatabase:
         description: str | None = None,
         image_url: str | None = None,
         site_name: str | None = None,
+        *,
+        bookmark_type: str | None = None,
+        flow_id: str | None = None,
+        source: str | None = None,
     ) -> Bookmark:
+        """Insert a new bookmark.
+
+        Writes the camelCase keys the blogmarks PWA reads (``ogTitle``,
+        ``ogDescription``, ``ogImage``, ``ogSiteName``) so a bookmark saved
+        through this server is indistinguishable in DDB from one saved through
+        the legacy blogmarks Lambda. The ``description``/``image_url``/
+        ``site_name`` arguments are kept for back-compat with existing callers
+        (the bookmarklet, REST `/api/save`, Claude/Cursor sessions); they map
+        to the OG.* fields rather than living under their snake_case names.
+        """
         now = datetime.now(timezone.utc).isoformat()
         bk_id = str(uuid.uuid4())
 
@@ -325,12 +377,17 @@ class DynamoDBDatabase:
                         "id": bk_id,
                         "url": url,
                         "title": title,
-                        "description": description,
-                        "image_url": image_url,
-                        "site_name": site_name,
+                        # camelCase OG (PWA reads these directly)
+                        "ogTitle": title,
+                        "ogDescription": description,
+                        "ogImage": image_url,
+                        "ogSiteName": site_name,
+                        # bookmarkType + flowId pass through if the caller supplied them
+                        "bookmarkType": bookmark_type,
+                        "flowId": flow_id,
                         "savedAt": now,
                         "userId": user_id,
-                        "source": "mcp",
+                        "source": source or "mcp",
                         "sourceIp": "127.0.0.1",
                         "organization_id": org_id,
                     }.items() if v is not None
@@ -349,6 +406,15 @@ class DynamoDBDatabase:
             site_name=site_name,
             tags=[],
             created_at=now,
+            # camelCase fields populated so the PWA gets a complete
+            # SavedResponse from save_bookmark without a follow-up read.
+            og_title=title,
+            og_description=description,
+            og_image=image_url,
+            og_site_name=site_name,
+            bookmark_type=bookmark_type,
+            saved_at=now,
+            source=source or "mcp",
         )
 
     def _dynamo_key(self, bookmark_id: int | str) -> str | None:
@@ -481,8 +547,49 @@ class DynamoDBDatabase:
     async def search_bookmarks(
         self, query: str | None = None, tag: str | None = None, limit: int = 20
     ) -> list[Bookmark]:
+        items, _ = await self._search_links(query=query, tag=tag, limit=limit, cursor=None)
+        return sorted(
+            [_to_bookmark(i) for i in items],
+            key=lambda b: str(b.created_at or ""),
+            reverse=True,
+        )
+
+    async def search_bookmarks_paged(
+        self,
+        query: str | None = None,
+        tag: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[list[Bookmark], str | None]:
+        """Cursor-aware search. Returns ``(items, next_cursor)``.
+
+        The cursor is opaque to the caller — base64(JSON(LastEvaluatedKey)).
+        Pass ``next_cursor`` from the previous call to continue. Returns
+        ``next_cursor=None`` when the scan is complete.
+        """
+        items, next_cursor = await self._search_links(
+            query=query, tag=tag, limit=limit, cursor=cursor
+        )
+        bookmarks = sorted(
+            [_to_bookmark(i) for i in items],
+            key=lambda b: str(b.created_at or ""),
+            reverse=True,
+        )
+        return bookmarks, next_cursor
+
+    async def _search_links(
+        self,
+        *,
+        query: str | None,
+        tag: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None]:
+        import base64
+        import json
+
         def _scan():
-            kwargs: dict[str, Any] = {"Limit": limit}
+            kwargs: dict[str, Any] = {"Limit": max(1, min(int(limit), 100))}
             base = self._base_link_filter()
             if tag and query:
                 kwargs["FilterExpression"] = base & (
@@ -503,15 +610,28 @@ class DynamoDBDatabase:
                 )
             else:
                 kwargs["FilterExpression"] = base
-            return self._links.scan(**kwargs).get("Items", [])
+            if cursor:
+                try:
+                    kwargs["ExclusiveStartKey"] = json.loads(
+                        base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+                    )
+                except Exception:
+                    pass  # invalid cursor → treat as fresh scan
+            resp = self._links.scan(**kwargs)
+            return resp.get("Items", []), resp.get("LastEvaluatedKey")
 
-        items = await _run(_scan)
-        bookmarks = [
-            _to_bookmark(i)
-            for i in items
+        raw_items, last_key = await _run(_scan)
+        visible = [
+            i
+            for i in raw_items
             if i.get("url") and not i.get("rateLimitKey") and self._item_org_visible(i)
         ]
-        return sorted(bookmarks, key=lambda b: str(b.created_at or ""), reverse=True)
+        next_cursor: str | None = None
+        if last_key:
+            next_cursor = base64.urlsafe_b64encode(
+                json.dumps(last_key, default=str).encode("utf-8")
+            ).decode("ascii")
+        return visible, next_cursor
 
     async def get_stats(self) -> dict:
         def _counts():

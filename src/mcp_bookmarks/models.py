@@ -1,7 +1,7 @@
 """Domain models for the bookmark knowledge base."""
 
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OGMetadata(BaseModel):
@@ -45,7 +45,22 @@ class ArticleContent(BaseModel):
 
 
 class Bookmark(BaseModel):
-    """A saved bookmark with its metadata and tags."""
+    """A saved bookmark with its metadata and tags.
+
+    The Blogmarks PWA reads camelCase fields (``ogTitle``, ``ogDescription``,
+    ``ogImage``, ``ogSiteName``, ``aiSummary``, ``aiTags``, ``aiContent``,
+    ``aiWordCount``, ``bookmarkType``, ``savedAt``, ...). The legacy snake_case
+    fields (``description``, ``image_url``, ``site_name``, ``summary``,
+    ``content``, ``word_count``) stay in place for back-compat with the
+    bookmarklet, Claude, Cursor, and existing REST clients.
+
+    On serialization we emit BOTH names (snake_case from the field declarations
+    + camelCase via ``Field(alias=...)``); ``model_dump(by_alias=True)`` yields
+    camelCase, ``model_dump()`` yields snake_case. ``populate_by_name=True``
+    lets ``_to_bookmark`` build the model from either DDB key.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     id: int | None = None
     dynamo_id: str | None = Field(
@@ -54,6 +69,8 @@ class Bookmark(BaseModel):
     )
     url: str
     title: str | None = None
+
+    # ── snake_case fields (back-compat with existing REST/MCP clients) ──
     description: str | None = None
     image_url: str | None = None
     site_name: str | None = None
@@ -63,6 +80,26 @@ class Bookmark(BaseModel):
     tags: list[str] = Field(default_factory=list, description="List of tag slugs")
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    # ── camelCase fields (what the Blogmarks PWA reads) ─────────────────
+    og_title: str | None = Field(default=None, alias="ogTitle")
+    og_description: str | None = Field(default=None, alias="ogDescription")
+    og_image: str | None = Field(default=None, alias="ogImage")
+    og_site_name: str | None = Field(default=None, alias="ogSiteName")
+    ai_summary: str | None = Field(default=None, alias="aiSummary")
+    ai_tags: list[str] = Field(default_factory=list, alias="aiTags")
+    ai_image: str | None = Field(default=None, alias="aiImage")
+    ai_content: str | None = Field(default=None, alias="aiContent")
+    ai_word_count: int = Field(default=0, alias="aiWordCount")
+    ai_status: str | None = Field(default=None, alias="aiStatus")
+    ai_error: str | None = Field(default=None, alias="aiError")
+    bookmark_type: str | None = Field(default=None, alias="bookmarkType")
+    bookmark_type_confidence: float | None = Field(
+        default=None, alias="bookmarkTypeConfidence"
+    )
+    original_url: str | None = Field(default=None, alias="originalUrl")
+    saved_at: str | None = Field(default=None, alias="savedAt")
+    source: str | None = None
 
 
 class BookmarkCreateResult(BaseModel):

@@ -134,11 +134,23 @@ def _bookmark_tool_id(b: Bookmark) -> int | str:
 
 
 @mcp.tool()
-async def save_bookmark(url: str, ctx: Context) -> str:
+async def save_bookmark(
+    url: str,
+    ctx: Context,
+    title: str | None = None,
+    bookmarkType: str | None = None,
+    flowId: str | None = None,
+    source: str | None = None,
+) -> str:
     """Save a URL and extract its Open Graph metadata.
 
     Fetches the page, parses og:title, og:description, og:image, etc.
     Returns the extracted metadata so you can decide how to tag it.
+
+    The PWA passes ``title``, ``bookmarkType``, ``flowId``, ``source``
+    along with the URL — they're stored on the DDB item under camelCase
+    keys (``bookmarkType``, ``flowId``) so PWA reads see them. When
+    ``title`` is omitted we fall back to the OG title.
 
     IMPORTANT: After saving, call get_tags() to see existing tags
     before creating new ones.
@@ -156,31 +168,28 @@ async def save_bookmark(url: str, ctx: Context) -> str:
 
     bookmark = await db.upsert_bookmark(
         url=og.url,
-        title=og.title,
+        title=title or og.title,
         description=og.description,
         image_url=og.image,
         site_name=og.site_name,
+        bookmark_type=bookmarkType,
+        flow_id=flowId,
+        source=source,
     )
 
     await _mcp_record("mcp_save_bookmark", {"url": url})
-    return json.dumps(
-        {
-            "bookmark_id": _bookmark_tool_id(bookmark),
-            "url": bookmark.url,
-            "title": bookmark.title,
-            "description": bookmark.description,
-            "image_url": bookmark.image_url,
-            "site_name": bookmark.site_name,
-            "existing_tags": bookmark.tags,
-            "has_content": bookmark.content is not None,
-            "hint": (
-                "DynamoDB: bookmark_id is a UUID string — pass it to extract_content, tag_bookmark, set_summary. "
-                "SQLite: integer id. Now call get_tags() before tag_bookmark()."
-            ),
-        },
-        ensure_ascii=False,
-        indent=2,
+    payload = bookmark.model_dump(by_alias=True, exclude_none=True)
+    payload["bookmark_id"] = _bookmark_tool_id(bookmark)
+    payload["existing_tags"] = bookmark.tags
+    payload["has_content"] = bookmark.content is not None
+    if flowId:
+        payload["flowId"] = flowId
+    payload["hint"] = (
+        "DynamoDB: bookmark_id is a UUID string — pass it to extract_content, "
+        "tag_bookmark, set_summary. SQLite: integer id. Now call get_tags() "
+        "before tag_bookmark()."
     )
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
 
 @mcp.tool()
@@ -292,34 +301,32 @@ async def read_bookmark(bookmark_id: int | str, ctx: Context) -> str:
 
     await _mcp_record("mcp_read_bookmark", {"bookmark_id": str(bookmark_id)})
 
-    result = {
-        "id": bookmark.dynamo_id or bookmark.id,
-        "url": bookmark.url,
-        "title": bookmark.title,
-        "description": bookmark.description,
-        "site_name": bookmark.site_name,
-        "image_url": bookmark.image_url,
-        "tags": bookmark.tags,
-        "summary": bookmark.summary,
-        "word_count": bookmark.word_count,
-        "created_at": str(bookmark.created_at),
-        "updated_at": str(bookmark.updated_at),
-    }
+    # Emit camelCase by alias (PWA reads ogImage, aiSummary, etc.) plus
+    # the snake_case fields kept for back-compat with existing clients.
+    result = bookmark.model_dump(by_alias=True, exclude_none=True)
+    result.setdefault("id", bookmark.dynamo_id or bookmark.id)
+    snake = bookmark.model_dump(exclude_none=True)
+    for k in ("description", "image_url", "site_name", "summary", "word_count"):
+        if k in snake and k not in result:
+            result[k] = snake[k]
 
     # Include full content if available (capped at 8k chars to be context-friendly)
     if bookmark.content:
         if len(bookmark.content) > 8000:
             result["content"] = bookmark.content[:8000]
+            result["aiContent"] = result["content"]
             result["content_truncated"] = True
             result["full_word_count"] = bookmark.word_count
         else:
             result["content"] = bookmark.content
+            result["aiContent"] = bookmark.content
             result["content_truncated"] = False
     else:
         result["content"] = None
+        result["aiContent"] = None
         result["hint"] = "No content extracted yet. Call extract_content() first."
 
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
 
 @mcp.tool()
@@ -450,6 +457,7 @@ async def search_bookmarks(
     query: str | None = None,
     tag: str | None = None,
     limit: int = 20,
+    cursor: str | None = None,
     ctx: Context = None,
 ) -> str:
     """Search the bookmark knowledge base.
@@ -457,33 +465,45 @@ async def search_bookmarks(
     Args:
         query: Free-text search across title, description, and URL.
         tag: Filter by a specific tag slug.
-        limit: Max results to return (default 20).
+        limit: Max results to return per page (default 20, capped at 100).
+        cursor: Opaque pagination cursor returned by a prior call as
+            ``nextCursor``. Pass it back to fetch the next page.
     """
     if (qb := await _mcp_quota_block()):
         return qb
     db = _get_db(ctx)
-    bookmarks = await db.search_bookmarks(query=query, tag=tag, limit=limit)
+    if hasattr(db, "search_bookmarks_paged"):
+        bookmarks, next_cursor = await db.search_bookmarks_paged(
+            query=query, tag=tag, limit=limit, cursor=cursor
+        )
+    else:
+        # SQLite (single-tenant local) doesn't paginate; return everything once.
+        bookmarks = await db.search_bookmarks(query=query, tag=tag, limit=limit)
+        next_cursor = None
     await _mcp_record("mcp_search_bookmarks", {"query": query, "tag": tag})
+
+    items = []
+    for b in bookmarks:
+        item = b.model_dump(by_alias=True, exclude_none=True)
+        item.setdefault("id", b.dynamo_id or b.id)
+        # Trim long descriptions in list view to keep payloads tight; full
+        # content lives behind read_bookmark.
+        if isinstance(item.get("ogDescription"), str) and len(item["ogDescription"]) > 200:
+            item["ogDescription"] = item["ogDescription"][:200]
+        if isinstance(item.get("description"), str) and len(item["description"]) > 200:
+            item["description"] = item["description"][:200]
+        item["has_content"] = b.content is not None
+        items.append(item)
 
     return json.dumps(
         {
             "total": len(bookmarks),
-            "bookmarks": [
-                {
-                    "id": b.dynamo_id or b.id,
-                    "url": b.url,
-                    "title": b.title,
-                    "description": b.description[:200] if b.description else None,
-                    "tags": b.tags,
-                    "summary": b.summary,
-                    "word_count": b.word_count,
-                    "has_content": b.content is not None,
-                }
-                for b in bookmarks
-            ],
+            "bookmarks": items,
+            "nextCursor": next_cursor,
         },
         ensure_ascii=False,
         indent=2,
+        default=str,
     )
 
 
