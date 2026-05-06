@@ -6,3 +6,5 @@ locals {
     Stack = "blogmarks-saas-mvp"
   }
 }
+
+data "aws_caller_identity" "current" {}

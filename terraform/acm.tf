@@ -52,3 +52,20 @@ resource "aws_route53_record" "mcp_alias" {
     evaluate_target_health = true
   }
 }
+
+# AAAA alias for IPv6 clients. The blogmarks CDK created an AAAA pointing at
+# CloudFront; we overwrite it here so v6 traffic also lands on the ALB.
+resource "aws_route53_record" "mcp_alias_aaaa" {
+  count   = var.enable_alb ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.mcp_hostname
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_lb.mcp[0].dns_name
+    zone_id                = aws_lb.mcp[0].zone_id
+    evaluate_target_health = true
+  }
+
+  allow_overwrite = true
+}
