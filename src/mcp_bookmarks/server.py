@@ -1052,6 +1052,7 @@ def create_combined_app():
     """Create a Starlette app that serves both MCP transports and the REST API.
 
     Routes:
+        /health           → Liveness probe (no auth, for ALB / k8s healthcheck)
         /sse, /messages/  → MCP SSE transport (Claude Code, Cursor, mcp-remote)
         /mcp              → MCP Streamable HTTP transport (ChatGPT custom connectors)
         /api/*            → REST API (bookmarklet, browser clients)
@@ -1059,8 +1060,10 @@ def create_combined_app():
         /ai-gateway       → AI Gateway ensemble + judge test UI
     """
     from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.middleware.cors import CORSMiddleware
     from starlette.routing import Mount, Route
-    from starlette.responses import RedirectResponse
+    from starlette.responses import JSONResponse, RedirectResponse
 
     from .api import ai_gateway_page, create_api_app, bookmarklet_page, stripe_webhook
 
@@ -1072,6 +1075,9 @@ def create_combined_app():
 
     async def root(request):
         return RedirectResponse("/bookmarklet")
+
+    async def health(request):
+        return JSONResponse({"status": "ok"})
 
     @asynccontextmanager
     async def _lifespan(app):
@@ -1085,10 +1091,32 @@ def create_combined_app():
     #   /messages/ — SSE POST endpoint
     # Spreading them directly into the parent router avoids conflicting catch-all
     # mounts while still keeping both transports alive.
+    cors_origins_raw = os.environ.get(
+        "MCP_CORS_ORIGINS",
+        "https://blogmarks.dev,https://www.blogmarks.dev,http://localhost:3000",
+    )
+    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    from .bearer_auth import BearerAuthMiddleware
+    # Order matters: CORS runs outermost so preflight responses still get
+    # Access-Control-Allow-Origin even when bearer auth would reject the inner
+    # request. Auth runs after, gating /mcp, /sse, /messages.
+    middleware = [
+        Middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "Accept", "Mcp-Session-Id"],
+            expose_headers=["Mcp-Session-Id"],
+            max_age=600,
+        ),
+        Middleware(BearerAuthMiddleware),
+    ]
     app = Starlette(
         lifespan=_lifespan,
+        middleware=middleware,
         routes=[
             Route("/", root),
+            Route("/health", health),
             Route("/bookmarklet", bookmarklet_page),
             Route("/ai-gateway", ai_gateway_page),
             Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
