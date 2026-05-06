@@ -37,6 +37,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from .request_context import reset_request_identity, set_request_identity
+
 
 # Routes that never require auth.
 _PUBLIC_PATHS = frozenset({"/", "/health", "/bookmarklet", "/ai-gateway", "/webhooks/stripe"})
@@ -214,19 +216,31 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Cognito JWT path (PWA users).
         claims = self._cognito.verify(token)
         if claims is not None:
-            request.state.user_id = str(claims.get("sub") or "")
-            request.state.tenant_id = os.environ.get("DYNAMODB_ORG_ID", "default")
+            user_id = str(claims.get("sub") or "")
+            tenant_id = os.environ.get("DYNAMODB_ORG_ID", "default")
+            request.state.user_id = user_id
+            request.state.tenant_id = tenant_id
             request.state.auth_kind = "cognito"
-            return await call_next(request)
+            tokens = set_request_identity(user_id, tenant_id)
+            try:
+                return await call_next(request)
+            finally:
+                reset_request_identity(tokens)
 
         # Scoped bm_v1_* token path (Claude, Cursor, external MCP clients).
         row = await self._scoped.verify(token)
         if row is not None:
-            request.state.user_id = str(row.get("userId") or row.get("ownerId") or "")
-            request.state.tenant_id = str(row.get("organizationId") or os.environ.get("DYNAMODB_ORG_ID", "default"))
+            user_id = str(row.get("userId") or row.get("ownerId") or "")
+            tenant_id = str(row.get("organizationId") or os.environ.get("DYNAMODB_ORG_ID", "default"))
+            request.state.user_id = user_id
+            request.state.tenant_id = tenant_id
             request.state.connection_id = str(row.get("id") or "")
             request.state.auth_kind = "scoped_token"
-            return await call_next(request)
+            tokens = set_request_identity(user_id, tenant_id)
+            try:
+                return await call_next(request)
+            finally:
+                reset_request_identity(tokens)
 
         return JSONResponse({"error": "invalid_token"}, status_code=401)
 

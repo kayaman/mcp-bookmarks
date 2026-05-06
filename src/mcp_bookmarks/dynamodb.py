@@ -96,7 +96,27 @@ class DynamoDBDatabase:
         return org if org and org != "default" else None
 
     def _user_id(self) -> str:
+        # Per-request identity (set by BearerAuthMiddleware on authenticated
+        # PWA / scoped-token traffic) takes precedence over the lifespan-level
+        # default. Falls back to the static env var so single-tenant stdio
+        # deployments behave exactly as before.
+        from .request_context import current_user_id
+        req_uid = current_user_id()
+        if req_uid:
+            return req_uid
         return self._tenant.user_id or os.environ.get("DYNAMODB_USER_ID", "mcp-agent")
+
+    def _request_user_filter(self):
+        """If a request user is in scope, return ``Attr("userId").eq(uid)``.
+
+        Returns ``None`` when there's no per-request identity — single-tenant
+        deployments keep their existing behaviour (org_id only).
+        """
+        from .request_context import current_user_id
+        req_uid = current_user_id()
+        if not req_uid:
+            return None
+        return Attr("userId").eq(req_uid)
 
     def _tenant_filter_expr(self):
         """Scope scans to this tenant's org (optional legacy items without attribute)."""
@@ -110,18 +130,29 @@ class DynamoDBDatabase:
     def _base_link_filter(self):
         fe = Attr("url").exists() & Attr("rateLimitKey").not_exists()
         tf = self._tenant_filter_expr()
-        return fe & tf if tf is not None else fe
+        if tf is not None:
+            fe = fe & tf
+        uf = self._request_user_filter()
+        if uf is not None:
+            fe = fe & uf
+        return fe
 
     def _item_org_visible(self, item: dict) -> bool:
         org_id = self._org_id()
-        if not org_id:
-            return True
-        oid = item.get("organization_id")
-        if oid == org_id:
-            return True
-        if oid is None and _ORG_LEGACY:
-            return True
-        return False
+        if org_id:
+            oid = item.get("organization_id")
+            if oid == org_id:
+                pass
+            elif oid is None and _ORG_LEGACY:
+                pass
+            else:
+                return False
+        # Per-request user scope: if set, the item must belong to that user.
+        from .request_context import current_user_id
+        req_uid = current_user_id()
+        if req_uid and item.get("userId") != req_uid:
+            return False
+        return True
 
     async def connect(self) -> None:
         pass  # DynamoDB is serverless
