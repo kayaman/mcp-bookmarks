@@ -32,8 +32,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, HTMLResponse
 from starlette.routing import Route
-from starlette.middleware.cors import CORSMiddleware
-
 from .auth import api_keys_configured, require_api_key
 from .db import Database, DEFAULT_DB_PATH
 from .scraper import extract_og_metadata, extract_article_content
@@ -915,12 +913,9 @@ def create_api_app() -> Starlette:
             Route("/ensemble", api_ensemble, methods=["POST"]),
         ],
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
-    )
+    # CORS is applied at the parent app (create_combined_app in server.py) so
+    # all routes — /mcp, /sse, /api/*, /health — share one origin policy. No
+    # inner CORSMiddleware here.
     if api_keys_configured():
         app.add_middleware(TenantAuthMiddleware)
     return app

@@ -40,9 +40,8 @@ ENV MCP_PORT=8000 \
 
 EXPOSE 8000
 
-# Health check — uvicorn serves on /sse
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/sse', timeout=3)" || exit 1
+    CMD python -c "import httpx,sys; r=httpx.get('http://localhost:8000/health', timeout=3); sys.exit(0 if r.status_code==200 else 1)" || exit 1
 
 # Non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser && \
