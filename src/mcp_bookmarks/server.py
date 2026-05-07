@@ -85,6 +85,15 @@ mcp = FastMCP(
     # Use MCP_HOST from env so DNS-rebinding protection is not auto-enabled
     # for the 127.0.0.1 default when deployed behind an ALB.
     host=os.environ.get("MCP_HOST", "0.0.0.0"),
+    # Browser clients (the Blogmarks PWA) call /mcp with one-shot tools/call
+    # POSTs that don't carry an Mcp-Session-Id. With the default stateful
+    # streamable_http transport, FastMCP rejects those with HTTP 400.
+    # stateless_http makes each request self-contained; json_response makes
+    # the response a single JSON body (instead of an SSE stream the PWA
+    # would have to parse). The SSE transport (used by Claude / Cursor) is
+    # unaffected by these flags.
+    stateless_http=True,
+    json_response=True,
 )
 
 
