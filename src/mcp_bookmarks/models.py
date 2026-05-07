@@ -101,6 +101,18 @@ class Bookmark(BaseModel):
     saved_at: str | None = Field(default=None, alias="savedAt")
     source: str | None = None
 
+    # ── ownership / share metadata (Blogmarks PWA detail page) ──────────
+    notes: str | None = None
+    mcp_exposed: bool | None = Field(default=None, alias="mcpExposed")
+    visibility: str | None = None
+    share_token: str | None = Field(default=None, alias="shareToken")
+    scraping_status: str | None = Field(default=None, alias="scrapingStatus")
+    scraped_at: str | None = Field(default=None, alias="scrapedAt")
+    ai_processed_at: str | None = Field(default=None, alias="aiProcessedAt")
+    ai_enrichment_attempts: int | None = Field(
+        default=None, alias="aiEnrichmentAttempts"
+    )
+
 
 class BookmarkCreateResult(BaseModel):
     """Result returned after saving a bookmark."""

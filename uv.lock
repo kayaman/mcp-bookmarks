@@ -1664,7 +1664,7 @@ cli = [
 
 [[package]]
 name = "mcp-bookmarks"
-version = "0.8.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
