@@ -102,6 +102,15 @@ def _to_bookmark(item: dict) -> Bookmark:
         original_url=item.get("originalUrl"),
         saved_at=item.get("savedAt"),
         source=item.get("source"),
+        # ownership + share metadata (PWA detail page)
+        notes=item.get("notes"),
+        mcp_exposed=item.get("mcpExposed"),
+        visibility=item.get("visibility"),
+        share_token=item.get("shareToken"),
+        scraping_status=item.get("scrapingStatus"),
+        scraped_at=item.get("scrapedAt"),
+        ai_processed_at=item.get("aiProcessedAt"),
+        ai_enrichment_attempts=item.get("aiEnrichmentAttempts"),
     )
 
 

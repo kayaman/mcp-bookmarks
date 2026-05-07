@@ -142,6 +142,43 @@ def test_to_bookmark_fallback_to_snakecase():
     assert b.og_site_name is None
 
 
+def test_to_bookmark_surfaces_ownership_fields():
+    """Ownership + share metadata fields written by the blogmarks PWA roundtrip
+    cleanly through _to_bookmark and serialize back as camelCase."""
+    item = {
+        "id": "abc",
+        "url": "https://example.com",
+        "title": "T",
+        "notes": "private notes",
+        "mcpExposed": True,
+        "visibility": "unlisted",
+        "shareToken": "tok-123",
+        "scrapingStatus": "done",
+        "scrapedAt": "2026-05-06T00:30:00Z",
+        "aiProcessedAt": "2026-05-06T00:35:00Z",
+        "aiEnrichmentAttempts": 2,
+    }
+    b = _to_bookmark(item)
+    assert b.notes == "private notes"
+    assert b.mcp_exposed is True
+    assert b.visibility == "unlisted"
+    assert b.share_token == "tok-123"
+    assert b.scraping_status == "done"
+    assert b.scraped_at == "2026-05-06T00:30:00Z"
+    assert b.ai_processed_at == "2026-05-06T00:35:00Z"
+    assert b.ai_enrichment_attempts == 2
+
+    dumped = b.model_dump(by_alias=True, exclude_none=True)
+    assert dumped["mcpExposed"] is True
+    assert dumped["visibility"] == "unlisted"
+    assert dumped["shareToken"] == "tok-123"
+    assert dumped["scrapingStatus"] == "done"
+    assert dumped["scrapedAt"] == "2026-05-06T00:30:00Z"
+    assert dumped["aiProcessedAt"] == "2026-05-06T00:35:00Z"
+    assert dumped["aiEnrichmentAttempts"] == 2
+    assert dumped["notes"] == "private notes"
+
+
 def test_to_bookmark_handles_blogmarks_lambda_shape():
     """A bookmark written by the legacy blogmarks Lambda surfaces with camelCase fields."""
     item = {
