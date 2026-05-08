@@ -145,9 +145,24 @@ class _ScopedTokenVerifier:
 
         def _scan() -> dict[str, Any] | None:
             table = self._get_table()
-            # The Lambda stores tokens with `tokenHash` as a GSI; fall back to a
-            # filtered scan if that GSI isn't reachable. Most lookups should
-            # find a row in O(1) via the GSI.
+            # Primary path: tokenHash-index GSI. O(1) lookup.
+            #
+            # Fallback: full filtered scan when the GSI is missing. NOTE: do NOT
+            # combine Limit with FilterExpression here. DynamoDB applies Limit
+            # to the raw items read *before* the filter runs, so `Limit=1 +
+            # FilterExpression="tokenHash = :h"` reads exactly one item, applies
+            # the filter, and returns empty unless that single read happens to
+            # be the matching row. With more than a handful of rows in the
+            # connections table, this path silently returned `invalid_token`
+            # for every scoped bm_v1_ caller until the GSI was created (the
+            # blogmarks May 2026 incident — required adding the GSI manually
+            # via aws CLI to unblock).
+            #
+            # Without Limit, the scan reads a 1 MB page and may need to
+            # paginate via ExclusiveStartKey. The connections table is small
+            # (per-user); a single page is enough in practice and the loop
+            # below handles pagination defensively for the rare big-tenant
+            # case.
             try:
                 resp = table.query(
                     IndexName="tokenHash-index",
@@ -157,12 +172,23 @@ class _ScopedTokenVerifier:
                 )
                 items = resp.get("Items", [])
             except Exception:
-                resp = table.scan(
-                    FilterExpression="tokenHash = :h",
-                    ExpressionAttributeValues={":h": token_hash},
-                    Limit=1,
-                )
-                items = resp.get("Items", [])
+                items = []
+                start_key: dict[str, Any] | None = None
+                while True:
+                    kwargs: dict[str, Any] = {
+                        "FilterExpression": "tokenHash = :h",
+                        "ExpressionAttributeValues": {":h": token_hash},
+                    }
+                    if start_key is not None:
+                        kwargs["ExclusiveStartKey"] = start_key
+                    resp = table.scan(**kwargs)
+                    page = resp.get("Items", [])
+                    if page:
+                        items.extend(page)
+                        break
+                    start_key = resp.get("LastEvaluatedKey")
+                    if start_key is None:
+                        break
             if not items:
                 return None
             row = items[0]
