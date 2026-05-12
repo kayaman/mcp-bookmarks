@@ -2,11 +2,10 @@ name: MCP Toggle (on-demand)
 
 # Manually scale the blogmarks-prod-mcp Fargate service up or down.
 #
-# CAVEAT: terraform/variables.tf has `ecs_desired_count` defaulting to 0,
-# but real production has it overridden somewhere (currently desired=1).
-# A future `terraform apply` may re-set the value if the override changes.
-# Re-run this workflow with `action=down` after any terraform apply that
-# touches the service.
+# terraform/terraform.tfvars sets ecs_desired_count=0 by default, so a
+# `terraform apply` will NOT bring the service back up. After bringing it
+# up via this workflow, avoid running terraform apply until you scale back
+# down (Terraform will reconcile the desiredCount back to 0).
 #
 # This service does NOT use Application Auto Scaling, so we only call
 # `aws ecs update-service`. Adding ASG would require a Terraform change

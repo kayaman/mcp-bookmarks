@@ -1,9 +1,9 @@
-# Copie para terraform.tfvars (não commite segredos).
-# aws configure --profile sua-conta
-# export AWS_PROFILE=sua-conta
+# Copy to terraform.tfvars (do not commit secrets).
+# aws configure --profile your-account
+# export AWS_PROFILE=your-account
 
 aws_region           = "us-east-1"
-project_name         = "blogmarks"
+project_name         = "mcp-bookmarks"
 environment          = "prod"
 cost_center          = "product-mvp"
 owner_tag            = "founder"
@@ -20,25 +20,25 @@ mcp_container_image       = "public.ecr.aws/docker/library/nginx:alpine"
 anthropic_api_key         = "REPLACE_ME"
 enable_lambda_processor   = true
 
-# Public MCP endpoint (enable for production demo)
+# Public MCP endpoint (enable for production)
 # enable_alb        = true
-# ecs_desired_count = 1
-# mcp_hostname      = "mcp.blogmarks.dev"
-# route53_zone_id   = "Z0123456789ABCDEFGHIJ"  # your blogmarks.dev hosted zone
+# ecs_desired_count = 0  # keep at 0; bring up via .github/workflows/mcp-toggle.yml
+# mcp_hostname      = "mcp.example.com"
+# route53_zone_id   = "Z0123456789ABCDEFGHIJ"  # your hosted zone id
 # mcp_api_keys      = "demo-key-1,demo-key-2:org-id"  # TF_VAR_mcp_api_keys recommended
 # ai_gateway_url    = ""
 # gateway_api_key   = ""
 
-# ── Blogmarks PWA traffic (Cognito JWT auth) ────────────────────────
-# Enables BearerAuthMiddleware on /mcp /sse /messages. Required for PWA users.
+# ── Optional: Cognito JWT auth on /mcp /sse /messages ───────────────
+# Enables BearerAuthMiddleware. Required when browser clients post a Cognito ID token.
 # mcp_bearer_auth        = true
 # cognito_user_pool_id   = "us-east-1_xxxxxxxxx"
 # cognito_client_id      = "xxxxxxxxxxxxxxxxxxxx"
 # cognito_region         = "us-east-1"
-# mcp_connections_table  = "blogmarks-mcp-connections"  # owned by the blogmarks CDK
+# mcp_connections_table  = "mcp-bookmarks-connections"  # external bm_v1_* token issuer's table
 
-# ── Share the blogmarks app's bookmark store ────────────────────────
-# When set, mcp-bookmarks reads/writes the existing production tables
-# instead of the empty terraform-managed blogmarks-prod-* tables.
-# links_table_override = "blogmarks-links"
-# tags_table_override  = "blogmarks-tags"
+# ── Share an existing bookmark store ────────────────────────────────
+# When set, mcp-bookmarks reads/writes existing tables instead of the
+# terraform-managed ones. Useful when an external app owns the data.
+# links_table_override = "existing-links-table"
+# tags_table_override  = "existing-tags-table"
