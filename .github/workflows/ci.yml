@@ -4,21 +4,45 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: 'Also run the live test suite (real network / AWS)'
+        type: boolean
+        default: false
 
 jobs:
   python:
+    name: Python (unit + integration)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - name: Sync and test
-        run: |
-          uv sync --extra dev
-          uv run python -m pytest tests/ -q --ignore=tests/test_api.py --ignore=tests/test_e2e_sse.py
+      - name: Sync dev deps
+        run: uv sync --extra dev
+      - name: Run unit + integration suite
+        # pyproject's addopts already filters out `-m live`; this is explicit
+        # so a reader of the workflow can see what's happening.
+        run: uv run python -m pytest tests/unit tests/integration -q
+
+  live:
+    name: Live tests (opt-in)
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_live == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - name: Sync dev deps
+        run: uv sync --extra dev
+      - name: Run live suite
+        run: uv run python -m pytest tests/live -q -m live
 
   rust-topic-compiler:
+    name: Rust topic-compiler build
     runs-on: ubuntu-latest
     defaults:
       run:

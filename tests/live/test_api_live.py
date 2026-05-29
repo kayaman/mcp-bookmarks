@@ -1,13 +1,23 @@
-"""REST API integration test — run with: python tests/test_api.py"""
+"""LIVE: REST API end-to-end against a subprocess server with real URL fetches.
+
+This test spawns a real uvicorn server and saves real public URLs
+(github.com, pypi.org) to exercise the full extract + persist path.
+
+Opt-in only: `uv run pytest -m live tests/live/test_api_live.py`.
+The default `pytest` invocation skips this file (see pyproject `live` marker).
+"""
 
 import asyncio
-import sys
-import os
-import tempfile
 import json
+import os
+import sys
+import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+import pytest
+
+
+pytestmark = [pytest.mark.live, pytest.mark.asyncio]
 
 
 async def find_free_port() -> int:
@@ -32,11 +42,8 @@ async def wait_for_server(port: int, timeout: float = 15.0):
     raise TimeoutError(f"Server on port {port} did not start within {timeout}s")
 
 
-async def main():
-    print("=" * 60)
-    print("  MCP Bookmarks — REST API Integration Test")
-    print("=" * 60)
-
+async def test_rest_api_end_to_end():
+    """Full REST surface against a real uvicorn subprocess + live URL fetches."""
     port = await find_free_port()
     db_path = Path(tempfile.mktemp(suffix=".db"))
     base = f"http://127.0.0.1:{port}"
@@ -193,5 +200,3 @@ async def main():
         print(f"\n✓ Cleaned up")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())

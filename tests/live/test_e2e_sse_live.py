@@ -1,22 +1,22 @@
-"""
-End-to-end SSE integration test.
+"""LIVE: end-to-end SSE flow against a subprocess server with real URL fetches.
 
-Starts the MCP Bookmarks server on a random port,
-connects via the MCP Python SDK client, and exercises
-all tools through the actual protocol.
+Spawns a real uvicorn server on a random port, connects via the MCP Python
+SDK client over SSE, and exercises tools that hit live HTTP (save_bookmark
+on github.com) plus the full tag-management flow.
 
-Run:
-    python tests/test_e2e_sse.py
+Opt-in only: `uv run pytest -m live tests/live/test_e2e_sse_live.py`.
 """
 
 import asyncio
-import sys
 import os
+import sys
 import tempfile
-import signal
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+import pytest
+
+
+pytestmark = [pytest.mark.live, pytest.mark.asyncio]
 
 
 async def find_free_port() -> int:
@@ -45,11 +45,8 @@ async def wait_for_server(port: int, timeout: float = 15.0):
     raise TimeoutError(f"Server on port {port} did not start within {timeout}s")
 
 
-async def main():
-    print("=" * 60)
-    print("  MCP Bookmarks — E2E SSE Integration Test")
-    print("=" * 60)
-
+async def test_sse_end_to_end():
+    """Full MCP SSE flow against a real uvicorn subprocess + live URL fetch."""
     port = await find_free_port()
     db_path = Path(tempfile.mktemp(suffix=".db"))
 
@@ -271,5 +268,3 @@ async def main():
         print(f"\n✓ Server shut down, temp DB cleaned up")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())

@@ -1,10 +1,5 @@
 """Judge JSON parsing for llm_ensemble."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 from mcp_bookmarks.llm_ensemble import _parse_judge_json, gateway_status_public
 
 
