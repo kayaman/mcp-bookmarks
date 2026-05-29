@@ -26,10 +26,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import time
 from typing import Any
 
-import httpx
 import jwt
 from jwt import PyJWKClient
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -37,7 +35,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .request_context import reset_request_identity, set_request_identity
-
 
 # Routes that never require auth.
 _PUBLIC_PATHS = frozenset({"/", "/health", "/bookmarklet", "/ai-gateway", "/webhooks/stripe"})
@@ -129,6 +126,7 @@ class _ScopedTokenVerifier:
     def _get_table(self) -> Any:
         if self._table is None:
             import boto3
+
             self._table = boto3.resource("dynamodb", region_name=self.region).Table(self.table_name)
         return self._table
 
@@ -254,7 +252,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         row = await self._scoped.verify(token)
         if row is not None:
             user_id = str(row.get("userId") or row.get("ownerId") or "")
-            tenant_id = str(row.get("organizationId") or os.environ.get("DYNAMODB_ORG_ID", "default"))
+            tenant_id = str(
+                row.get("organizationId") or os.environ.get("DYNAMODB_ORG_ID", "default")
+            )
             request.state.user_id = user_id
             request.state.tenant_id = tenant_id
             request.state.connection_id = str(row.get("id") or "")
@@ -277,7 +277,7 @@ def request_user_id(ctx: Any) -> str | None:
     Returns ``None`` for stdio transport or when bearer auth isn't enabled.
     """
     try:
-        request = ctx.request_context.request  # type: ignore[attr-defined]
+        request = ctx.request_context.request
     except AttributeError:
         return None
     if request is None:

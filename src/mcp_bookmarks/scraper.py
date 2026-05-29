@@ -3,21 +3,17 @@
 import httpx
 from bs4 import BeautifulSoup
 
-from .models import OGMetadata, ArticleContent
+from .models import ArticleContent, OGMetadata
 
 # Common browser User-Agent to avoid blocks
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-)
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 TIMEOUT = 15.0
 
 
 async def fetch_html(url: str) -> str:
     """Fetch raw HTML from a URL."""
     headers = {"User-Agent": USER_AGENT}
-    async with httpx.AsyncClient(
-        follow_redirects=True, timeout=TIMEOUT, headers=headers
-    ) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT, headers=headers) as client:
         response = await client.get(url)
         response.raise_for_status()
     return response.text
@@ -86,7 +82,9 @@ async def extract_article_content(url: str) -> ArticleContent:
         # Remove noise elements
         for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
             tag.decompose()
-        paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 30]
+        paragraphs = [
+            p.get_text(strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 30
+        ]
         text = "\n\n".join(paragraphs)
         method = "beautifulsoup-fallback"
 

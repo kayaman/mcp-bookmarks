@@ -12,7 +12,6 @@ import pytest
 
 from mcp_bookmarks.db import Database
 
-
 pytestmark = pytest.mark.asyncio
 
 

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
-
-import asyncio
 
 # Monthly limit of MCP-style events (0 = disabled)
 _MONTHLY_LIMIT = int(os.environ.get("MCP_MONTHLY_USAGE_LIMIT", "0"))
@@ -20,7 +19,7 @@ def monthly_limit_enabled() -> bool:
 
 
 def _month_prefix() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m")
+    return datetime.now(UTC).strftime("%Y-%m")
 
 
 async def check_quota_sqlite(db_path, tenant_id: str | None) -> tuple[bool, int, int]:
@@ -49,7 +48,7 @@ async def record_usage_sqlite(
 ) -> None:
     import aiosqlite
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     tid = tenant_id or "default"
     meta = json.dumps(metadata or {}, default=str)
     async with aiosqlite.connect(str(db_path)) as conn:
@@ -76,11 +75,13 @@ async def record_usage_dynamo(
     import boto3
 
     def _put():
-        db = boto3.resource("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+        db = boto3.resource(
+            "dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
         db.Table(table).put_item(
             Item={
                 "id": str(uuid.uuid4()),
-                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "createdAt": datetime.now(UTC).isoformat(),
                 "eventType": event_type,
                 "tenantId": tenant_id or "default",
                 "metadata": json.dumps(metadata or {}, default=str),
@@ -129,7 +130,9 @@ async def check_quota_dynamo(tenant_id: str | None) -> tuple[bool, int, int]:
     prefix = _month_prefix()
 
     def _scan_count():
-        db = boto3.resource("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+        db = boto3.resource(
+            "dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
         tbl = db.Table(table)
         # Filter scan — fine for low volume; use GSI + Query at scale
         resp = tbl.scan(

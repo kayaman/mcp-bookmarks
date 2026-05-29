@@ -22,12 +22,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_bookmarks.request_context import (
-    current_user_id,
     current_tenant_id,
-    set_request_identity,
+    current_user_id,
     reset_request_identity,
+    set_request_identity,
 )
-
 
 # ── ContextVar isolation ────────────────────────────────────────────
 
@@ -72,6 +71,7 @@ async def test_concurrent_tasks_isolated():
 def _build_db():
     """Construct a DynamoDBDatabase without touching real boto3."""
     from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
     with patch("mcp_bookmarks.dynamodb._dynamo") as fake_dynamo:
         fake_dynamo.return_value.Table.return_value = object()
         return DynamoDBDatabase()
@@ -148,6 +148,7 @@ async def test_middleware_cognito_sets_contextvar_around_call_next(monkeypatch):
         seen["tid_inside"] = current_tenant_id()
         # Return a minimal response object that the middleware can pass through.
         from starlette.responses import JSONResponse
+
         return JSONResponse({"ok": True})
 
     # Build a Request with a path that triggers auth (/mcp).
@@ -188,6 +189,7 @@ async def test_middleware_scoped_token_sets_contextvar(monkeypatch):
         seen["uid_inside"] = current_user_id()
         seen["tid_inside"] = current_tenant_id()
         from starlette.responses import JSONResponse
+
         return JSONResponse({"ok": True})
 
     request = MagicMock()
@@ -198,13 +200,16 @@ async def test_middleware_scoped_token_sets_contextvar(monkeypatch):
 
     middleware = BearerAuthMiddleware(app=lambda *a, **kw: None)
     fake_row = {"id": "conn-1", "userId": "user-456", "organizationId": "acme-team"}
-    with patch(
-        "mcp_bookmarks.bearer_auth._CognitoVerifier.verify",
-        return_value=None,
-    ), patch(
-        "mcp_bookmarks.bearer_auth._ScopedTokenVerifier.verify",
-        new_callable=AsyncMock,
-        return_value=fake_row,
+    with (
+        patch(
+            "mcp_bookmarks.bearer_auth._CognitoVerifier.verify",
+            return_value=None,
+        ),
+        patch(
+            "mcp_bookmarks.bearer_auth._ScopedTokenVerifier.verify",
+            new_callable=AsyncMock,
+            return_value=fake_row,
+        ),
     ):
         resp = await middleware.dispatch(request, fake_call_next)
 

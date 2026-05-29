@@ -127,7 +127,6 @@ def test_capabilities_payload_keys_match_dataclass_fields():
     `backend_capabilities_payload` silently drops.
     """
     import dataclasses
-
     from pathlib import Path
 
     from mcp_bookmarks.db import Database

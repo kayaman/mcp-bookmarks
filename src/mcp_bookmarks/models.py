@@ -1,6 +1,7 @@
 """Domain models for the bookmark knowledge base."""
 
 from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -94,9 +95,7 @@ class Bookmark(BaseModel):
     ai_status: str | None = Field(default=None, alias="aiStatus")
     ai_error: str | None = Field(default=None, alias="aiError")
     bookmark_type: str | None = Field(default=None, alias="bookmarkType")
-    bookmark_type_confidence: float | None = Field(
-        default=None, alias="bookmarkTypeConfidence"
-    )
+    bookmark_type_confidence: float | None = Field(default=None, alias="bookmarkTypeConfidence")
     original_url: str | None = Field(default=None, alias="originalUrl")
     saved_at: str | None = Field(default=None, alias="savedAt")
     source: str | None = None
@@ -109,9 +108,7 @@ class Bookmark(BaseModel):
     scraping_status: str | None = Field(default=None, alias="scrapingStatus")
     scraped_at: str | None = Field(default=None, alias="scrapedAt")
     ai_processed_at: str | None = Field(default=None, alias="aiProcessedAt")
-    ai_enrichment_attempts: int | None = Field(
-        default=None, alias="aiEnrichmentAttempts"
-    )
+    ai_enrichment_attempts: int | None = Field(default=None, alias="aiEnrichmentAttempts")
 
 
 class BookmarkCreateResult(BaseModel):

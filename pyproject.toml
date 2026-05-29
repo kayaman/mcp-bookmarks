@@ -44,3 +44,67 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_bookmarks"]
+
+# ── Lint + format (Ruff) ─────────────────────────────────────────────
+#
+# Run locally: `make lint` (check) and `make format` (apply).
+# CI enforces both — see .github/workflows/ci.yml.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "lambda/handler.py",        # sample template (see ADR-0006); snake_case schema
+    "src/mcp_bookmarks/_static", # binary asset directory
+    "terraform/.build",          # generated zips
+]
+
+[tool.ruff.lint]
+# Conservative starter set. Add codes here when we want to enforce more.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort import ordering
+    "B",   # bugbear (common gotchas)
+    "UP",  # pyupgrade
+    "SIM", # simplify (catch dead branches, redundant if/else)
+    "RUF", # ruff-specific (e.g. mutable class defaults)
+]
+ignore = [
+    "E501",  # line-length already enforced by the formatter; lint complaints are noisy
+    "B008",  # function default at definition — Starlette `Depends(...)` style is fine
+    "SIM117", # nested with-blocks — keeping them explicit is often clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "B011",  # assert False — fine in tests
+    "B017",  # pytest.raises(Exception) — fine in negative tests
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mcp_bookmarks"]
+
+# ── Type checking (mypy) ─────────────────────────────────────────────
+#
+# Pragmatic baseline — not strict. We catch obvious type errors and
+# missing-import bugs without forcing every untyped helper to be annotated.
+# Run locally: `make typecheck`. CI enforces.
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/mcp_bookmarks"]
+ignore_missing_imports = true           # boto3, trafilatura, etc. lack stubs
+check_untyped_defs = true               # type-check inside un-annotated functions
+warn_unused_ignores = true              # surface stale `# type: ignore`
+warn_redundant_casts = true
+warn_unreachable = true
+show_error_codes = true
+# Do NOT enable strict mode in this PR — the existing src/ has ~70% type
+# coverage and turning on strict would surface hundreds of errors. The
+# right path is incremental: enable per-module strict overrides as
+# coverage improves. Tracked as a follow-up.
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true  # tests use pytest fixtures + MagicMock heavily; not worth typing today

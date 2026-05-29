@@ -24,14 +24,11 @@ from mcp_bookmarks.api_requests import (
     parse_request_body,
 )
 
-
 # ── Envelope shape ─────────────────────────────────────────────────
 
 
 def test_envelope_minimal_serialization():
-    env = ApiErrorEnvelope(
-        error=ApiError(code=ErrorCode.NOT_FOUND, message="missing")
-    )
+    env = ApiErrorEnvelope(error=ApiError(code=ErrorCode.NOT_FOUND, message="missing"))
     payload = env.model_dump(exclude_none=True)
     assert payload == {"error": {"code": "not_found", "message": "missing"}}
 

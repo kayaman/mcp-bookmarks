@@ -17,7 +17,6 @@ from starlette.responses import JSONResponse
 
 from .api_envelope import ErrorCode, error_response
 
-
 # ── Request models ─────────────────────────────────────────────────
 
 

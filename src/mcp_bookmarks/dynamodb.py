@@ -9,14 +9,15 @@ Activate with DYNAMODB_MODE=true and set:
 """
 
 import asyncio
+import contextlib
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import boto3
-from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.conditions import Attr
 
 from .backend import DYNAMODB_CAPABILITIES
 from .models import Bookmark, Tag
@@ -152,6 +153,7 @@ class DynamoDBDatabase:
         # default. Falls back to the static env var so single-tenant stdio
         # deployments behave exactly as before.
         from .request_context import current_user_id
+
         req_uid = current_user_id()
         if req_uid:
             return req_uid
@@ -164,6 +166,7 @@ class DynamoDBDatabase:
         deployments keep their existing behaviour (org_id only).
         """
         from .request_context import current_user_id
+
         req_uid = current_user_id()
         if not req_uid:
             return None
@@ -192,18 +195,15 @@ class DynamoDBDatabase:
         org_id = self._org_id()
         if org_id:
             oid = item.get("organization_id")
-            if oid == org_id:
-                pass
-            elif oid is None and _ORG_LEGACY:
+            if oid == org_id or (oid is None and _ORG_LEGACY):
                 pass
             else:
                 return False
         # Per-request user scope: if set, the item must belong to that user.
         from .request_context import current_user_id
+
         req_uid = current_user_id()
-        if req_uid and item.get("userId") != req_uid:
-            return False
-        return True
+        return not (req_uid and item.get("userId") != req_uid)
 
     async def connect(self) -> None:
         pass  # DynamoDB is serverless
@@ -227,7 +227,9 @@ class DynamoDBDatabase:
     async def search_tags(self, query: str) -> list[Tag]:
         all_tags = await self.get_all_tags()
         q = query.lower()
-        return [t for t in all_tags if q in t.slug or q in t.name.lower() or q in t.description.lower()]
+        return [
+            t for t in all_tags if q in t.slug or q in t.name.lower() or q in t.description.lower()
+        ]
 
     async def create_tag(self, slug: str, name: str, description: str = "") -> Tag:
         def _put():
@@ -237,7 +239,7 @@ class DynamoDBDatabase:
                     "name": name,
                     "description": description,
                     "usage_count": 0,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                 },
                 ConditionExpression=Attr("slug").not_exists(),
             )
@@ -252,7 +254,9 @@ class DynamoDBDatabase:
         item = await _run(_get)
         return _to_tag(item) if item else None
 
-    async def update_tag(self, slug: str, new_name: str | None = None, new_description: str | None = None) -> Tag | None:
+    async def update_tag(
+        self, slug: str, new_name: str | None = None, new_description: str | None = None
+    ) -> Tag | None:
         tag = await self.get_tag_by_slug(slug)
         if not tag:
             return None
@@ -297,9 +301,11 @@ class DynamoDBDatabase:
         items = await _run(_scan_with_tag)
         for item in items:
             bk_id = item["id"]
+
             # Fetch full item to rebuild the tag list
             def _get_bk(bid=bk_id):
                 return self._links.get_item(Key={"id": bid}).get("Item", {})
+
             full = await _run(_get_bk)
             new_tags = [t for t in full.get("aiTags", []) if t != slug]
 
@@ -309,6 +315,7 @@ class DynamoDBDatabase:
                     UpdateExpression="SET aiTags = :tags",
                     ExpressionAttributeValues={":tags": tags},
                 )
+
             await _run(_upd)
 
         def _del():
@@ -347,11 +354,16 @@ class DynamoDBDatabase:
                     UpdateExpression="SET aiTags = :tags",
                     ExpressionAttributeValues={":tags": t},
                 )
+
             await _run(_upd)
             reassigned += 1
 
         await self.delete_tag(source_slug)
-        return {"source_deleted": source_slug, "target": target_slug, "bookmarks_reassigned": reassigned}
+        return {
+            "source_deleted": source_slug,
+            "target": target_slug,
+            "bookmarks_reassigned": reassigned,
+        }
 
     # ── Bookmarks ─────────────────────────────────────────────────────
 
@@ -375,7 +387,7 @@ class DynamoDBDatabase:
         (the bookmarklet, REST `/api/save`, Claude/Cursor sessions); they map
         to the OG.* fields rather than living under their snake_case names.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         bk_id = str(uuid.uuid4())
 
         org_id = self._org_id()
@@ -384,7 +396,8 @@ class DynamoDBDatabase:
         def _put():
             self._links.put_item(
                 Item={
-                    k: v for k, v in {
+                    k: v
+                    for k, v in {
                         "id": bk_id,
                         "url": url,
                         "title": title,
@@ -401,7 +414,8 @@ class DynamoDBDatabase:
                         "source": source or "mcp",
                         "sourceIp": "127.0.0.1",
                         "organization_id": org_id,
-                    }.items() if v is not None
+                    }.items()
+                    if v is not None
                 },
                 ConditionExpression=Attr("id").not_exists(),
             )
@@ -451,7 +465,9 @@ class DynamoDBDatabase:
 
     _MAX_AI_CONTENT_CHARS = 350_000
 
-    async def set_bookmark_content(self, bookmark_id: int | str, content: str, word_count: int) -> None:
+    async def set_bookmark_content(
+        self, bookmark_id: int | str, content: str, word_count: int
+    ) -> None:
         key = self._dynamo_key(bookmark_id)
         if not key:
             return
@@ -464,7 +480,7 @@ class DynamoDBDatabase:
             return
         text_body = (content or "")[: self._MAX_AI_CONTENT_CHARS]
         wc = word_count if word_count else len(text_body.split())
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         def _upd():
             self._links.update_item(
@@ -486,7 +502,7 @@ class DynamoDBDatabase:
         existing = await _run(_peek)
         if not existing or not self._item_org_visible(existing):
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         def _upd():
             self._links.update_item(
@@ -521,7 +537,7 @@ class DynamoDBDatabase:
                 UpdateExpression="SET aiTags = :tags, aiProcessedAt = :now",
                 ExpressionAttributeValues={
                     ":tags": merged,
-                    ":now": datetime.now(timezone.utc).isoformat(),
+                    ":now": datetime.now(UTC).isoformat(),
                 },
             )
 
@@ -548,7 +564,7 @@ class DynamoDBDatabase:
                 UpdateExpression="SET aiTags = :tags, aiProcessedAt = :now",
                 ExpressionAttributeValues={
                     ":tags": new_tags,
-                    ":now": datetime.now(timezone.utc).isoformat(),
+                    ":now": datetime.now(UTC).isoformat(),
                 },
             )
 
@@ -622,12 +638,11 @@ class DynamoDBDatabase:
             else:
                 kwargs["FilterExpression"] = base
             if cursor:
-                try:
+                # Invalid cursor → treat as fresh scan rather than 500ing the request.
+                with contextlib.suppress(Exception):
                     kwargs["ExclusiveStartKey"] = json.loads(
                         base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
                     )
-                except Exception:
-                    pass  # invalid cursor → treat as fresh scan
             resp = self._links.scan(**kwargs)
             return resp.get("Items", []), resp.get("LastEvaluatedKey")
 
@@ -684,7 +699,7 @@ class DynamoDBDatabase:
         stats = await self.get_stats()
         return {
             "version": "1.0",
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "stats": stats,
             "tags": [t.model_dump(mode="json") for t in tags],
             "bookmarks": [

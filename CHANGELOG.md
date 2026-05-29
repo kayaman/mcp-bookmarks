@@ -5,6 +5,95 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **OSS roadmap PRs (WDN-391 → WDN-400).** Standalone open-source narrative,
+  README rewrite, deterministic test layout (unit/integration/live split),
+  BookmarkBackend protocol + capability flags, REST envelope + Pydantic
+  request validation, Terraform IAM scoping + alarms + infra docs,
+  capability enforcement + `/api/capabilities`, structured logging +
+  correlation IDs + `/ready`, ADR-0001..0007, single-page go-live
+  walkthrough, ruff + mypy + Makefile + pre-commit + CONTRIBUTING +
+  RELEASING.
+- **`docs/architecture.md`** layered diagram, capability matrix, layer
+  boundaries.
+- **`docs/api.md`** REST contract documentation: error envelope, error-code
+  taxonomy, per-endpoint reference, rate-limiting details, auth + tenant
+  resolution.
+- **`docs/runbook.md`** operational runbook: `/health` vs `/ready`,
+  canonical event names, startup / quota / Stripe verification recipes,
+  backend failure handling, deploy + rollback.
+- **`docs/infra.md`** cloud topology: trust boundaries, failure-domain
+  matrix, RPO/RTO targets, monitoring + alerting thresholds, scaling
+  path, environment separation, IAM scoping.
+- **`docs/go-live.md`** single-page operator walkthrough for the first
+  AWS deployment (tfvars, ECR image, ALB + ACM, ECS, smoke test).
+- **`docs/adr/`** seven Architecture Decision Records (0001..0007)
+  covering dual-mode storage, single-app transports, quota design,
+  capability flags, vector roadmap, deploy boundary, multi-tenancy.
+- **`/api/capabilities`** REST endpoint reporting the active backend's
+  capability flags (`semantic_search`, `paged_search`,
+  `integer_bookmark_ids`, `usage_metering`, `subscription_storage`).
+- **`/ready`** readiness endpoint suitable for ALB target health checks
+  (returns 503 with structured `reason` on backend failure).
+- **Self-hosted JetBrains Mono** font under `/static/jetbrains-mono.woff2`
+  with long-cache `immutable` headers; drops the render-blocking Google
+  Fonts dependency on `/ai-gateway`.
+- **`SecurityHeadersMiddleware`** — CSP (with SHA-256 hash for the
+  `/ai-gateway` inline script), `X-Content-Type-Options`,
+  `Referrer-Policy`, `Permissions-Policy`.
+- **`CorrelationMiddleware`** — propagates `X-Correlation-ID` through a
+  contextvar so every log record under a request carries the same id.
+- **`GZipMiddleware`** outermost in the stack; `text/event-stream`
+  auto-skipped so SSE keeps streaming.
+- **Ruff + mypy + CI gates** — `make ci` runs every gate locally;
+  `.pre-commit-config.yaml` fires on changed files.
+- **`Makefile`** with `install`, `test`, `lint`, `format`, `typecheck`,
+  `ci`, `dev`, `smoke`, `clean`, `pre-commit-install` targets.
+- **`CONTRIBUTING.md`** and **`RELEASING.md`** documenting the
+  contributor flow and release checklist.
+- **Sample enrichment Lambda** marked `enable_lambda_processor=false`
+  by default with a `⚠️ SAMPLE / TEMPLATE` notice in
+  `lambda/handler.py` (ADR-0006).
+
+### Changed
+
+- **README.md** rewritten around a single product line ("bookmark
+  intelligence platform with MCP + REST + dual-backend cloud
+  architecture"), with Mermaid architecture and deployment diagrams,
+  Production-ready vs experimental table, and reference tables in
+  collapsed `<details>`.
+- **REST error responses** now use a single shape:
+  `{"error": {"code": "...", "message": "...", "details": {...}}}` with
+  a stable `StrEnum` of codes.
+- **`/api/usage`** gates on the backend's `usage_metering` capability
+  and returns a structured `forbidden` envelope when unavailable.
+- **`BookmarkBackend`** protocol replaces implicit duck typing; both
+  `Database` and `DynamoDBDatabase` declare a `capabilities` attribute.
+- **CI** (`/.github/workflows/ci.yml`) gains lint + type-check jobs;
+  test job now runs `tests/unit` and `tests/integration` explicitly.
+- **`lambda.tf`** logs IAM policy scoped to the specific log group
+  ARN (was `Resource = "arn:aws:logs:*:*:*"`).
+- **GitHub repo description + topics** aligned with the README's first
+  screen.
+
+### Fixed
+
+- **Lighthouse scores on `/bookmarklet` and `/ai-gateway`** — both
+  pages now hit 100/100/100/100 on Accessibility, Best Practices, SEO,
+  and Agentic Browsing; Performance metrics LCP < 100ms, CLS ≤ 0.03.
+- **`GET /ready`** added so ALB target health checks drain a task when
+  the backend is unreachable (per ADR-0002).
+
+### Documentation
+
+- **ADR-0001..0007** in `docs/adr/` with consistent template.
+- **Cross-references** between docs/architecture.md, docs/api.md,
+  docs/infra.md, docs/runbook.md, docs/go-live.md, and the ADRs.
+- **Capability matrix** in docs/architecture.md.
+
 ## [0.8.0] - 2026-04-18
 
 ### Added

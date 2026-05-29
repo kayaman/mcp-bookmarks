@@ -8,7 +8,6 @@ The default `pytest` invocation skips this file (see pyproject `live` marker).
 """
 
 import asyncio
-import json
 import os
 import sys
 import tempfile
@@ -16,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = [pytest.mark.live, pytest.mark.asyncio]
 
 
 async def find_free_port() -> int:
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -29,6 +28,7 @@ async def find_free_port() -> int:
 
 async def wait_for_server(port: int, timeout: float = 15.0):
     import socket
+
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -57,7 +57,9 @@ async def test_rest_api_end_to_end():
 
     print(f"\n⏳ Starting server on port {port}...")
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "mcp_bookmarks",
+        sys.executable,
+        "-m",
+        "mcp_bookmarks",
         env=env,
         cwd=str(Path(__file__).parent.parent),
         stdout=asyncio.subprocess.PIPE,
@@ -71,13 +73,12 @@ async def test_rest_api_end_to_end():
         import httpx
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-
             # ── GET /bookmarklet ──
             resp = await client.get(f"{base}/bookmarklet")
             assert resp.status_code == 200
             assert "MCP Bookmarks" in resp.text
             assert "Save to MCP" in resp.text
-            print(f"✓ GET /bookmarklet → 200 (HTML page with bookmarklet)")
+            print("✓ GET /bookmarklet → 200 (HTML page with bookmarklet)")
 
             # ── GET /api/stats (empty) ──
             resp = await client.get(f"{base}/api/stats")
@@ -103,7 +104,9 @@ async def test_rest_api_end_to_end():
             assert data["status"] == "saved"
             assert data["bookmark_id"] == 1
             assert data["title"] is not None
-            print(f"✓ POST /api/save (JSON) → id={data['bookmark_id']}, title='{data['title'][:50]}'")
+            print(
+                f"✓ POST /api/save (JSON) → id={data['bookmark_id']}, title='{data['title'][:50]}'"
+            )
             print(f"  word_count={data['word_count']}")
 
             # ── POST /api/save (form body) ──
@@ -115,12 +118,14 @@ async def test_rest_api_end_to_end():
             data = resp.json()
             assert data["status"] == "saved"
             assert data["bookmark_id"] == 2
-            print(f"✓ POST /api/save (form) → id={data['bookmark_id']}, title='{(data.get('title') or 'N/A')[:50]}'")
+            print(
+                f"✓ POST /api/save (form) → id={data['bookmark_id']}, title='{(data.get('title') or 'N/A')[:50]}'"
+            )
 
             # ── POST /api/save (missing url) ──
             resp = await client.post(f"{base}/api/save", json={})
             assert resp.status_code == 400
-            print(f"✓ POST /api/save (no url) → 400")
+            print("✓ POST /api/save (no url) → 400")
 
             # ── GET /api/bookmarks ──
             resp = await client.get(f"{base}/api/bookmarks")
@@ -141,7 +146,7 @@ async def test_rest_api_end_to_end():
             assert resp.status_code == 200
             b1 = resp.json()
             assert b1.get("url")
-            print(f"✓ GET /api/bookmarks/1 → url present")
+            print("✓ GET /api/bookmarks/1 → url present")
 
             # ── POST /api/tag ──
             resp = await client.post(
@@ -149,7 +154,7 @@ async def test_rest_api_end_to_end():
                 json={"slug": "open-source", "name": "Open Source", "description": "FOSS"},
             )
             assert resp.status_code == 201
-            print(f"✓ POST /api/tag → 201")
+            print("✓ POST /api/tag → 201")
 
             # ── POST /api/bookmarks/1/tags ──
             resp = await client.post(
@@ -157,7 +162,7 @@ async def test_rest_api_end_to_end():
                 json={"tag_slugs": ["open-source"]},
             )
             assert resp.status_code == 200
-            print(f"✓ POST /api/bookmarks/1/tags → 200")
+            print("✓ POST /api/bookmarks/1/tags → 200")
 
             # ── POST /api/bookmarks/1/summary ──
             resp = await client.post(
@@ -165,7 +170,7 @@ async def test_rest_api_end_to_end():
                 json={"summary": "GitHub landing page."},
             )
             assert resp.status_code == 200
-            print(f"✓ POST /api/bookmarks/1/summary → 200")
+            print("✓ POST /api/bookmarks/1/summary → 200")
 
             # ── GET /api/stats (after saves) ──
             resp = await client.get(f"{base}/api/stats")
@@ -187,16 +192,14 @@ async def test_rest_api_end_to_end():
                     print(f"✓ MCP SSE coexists with REST: {len(tool_names)} tools available")
 
         print(f"\n{'=' * 60}")
-        print(f"  🎉 ALL REST API TESTS PASSED")
+        print("  🎉 ALL REST API TESTS PASSED")
         print(f"{'=' * 60}")
 
     finally:
         proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
         db_path.unlink(missing_ok=True)
-        print(f"\n✓ Cleaned up")
-
-
+        print("\n✓ Cleaned up")

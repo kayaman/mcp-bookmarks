@@ -27,14 +27,16 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any, cast
 
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
+
+from . import llm_ensemble
 from .api_envelope import ErrorCode, error_response
-from .security_headers import compute_script_hash
 from .api_requests import (
     BookmarkSummaryRequest,
     BookmarkTagsRequest,
@@ -45,16 +47,17 @@ from .api_requests import (
 )
 from .auth import api_keys_configured, require_api_key
 from .backend import (
+    BookmarkBackend,
     UnsupportedCapability,
     backend_capabilities_payload,
     require_capability,
 )
-from .db import Database, DEFAULT_DB_PATH
-from .scraper import extract_og_metadata, extract_article_content
+from .db import DEFAULT_DB_PATH, Database
+from .scraper import extract_article_content, extract_og_metadata
+from .security_headers import compute_script_hash
 from .stripe_util import verify_stripe_signature
 from .subscription_store import extract_subscription_fields, upsert_from_stripe_event
 from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
-from . import llm_ensemble
 
 log = logging.getLogger(__name__)
 
@@ -96,11 +99,13 @@ async def _record_rest_usage(tenant: str, event_type: str, metadata: dict | None
     await record_usage_for_backend(_get_db_path(), event_type, tenant, metadata)
 
 
-async def _db(request: Request | None = None):
+async def _db(request: Request | None = None) -> BookmarkBackend:
     tenant_id = _effective_tenant(request) if request is not None else "default"
+    db: BookmarkBackend
     if _dynamodb_mode():
         from .dynamodb import DynamoDBDatabase
         from .models import Tenant
+
         db = DynamoDBDatabase(tenant=Tenant(organization_id=tenant_id))
     else:
         db = Database(_get_db_path(), tenant_id=tenant_id)
@@ -141,6 +146,7 @@ async def api_save(request: Request) -> JSONResponse:
         body_model, err = await parse_request_body(request, SaveBookmarkRequest)
         if err is not None:
             return err
+        assert body_model is not None  # parse_request_body invariant; helps mypy narrow
         url = body_model.url
     else:
         # Form-encoded bookmarklet POST or query-string fallback.
@@ -177,6 +183,7 @@ async def api_save(request: Request) -> JSONResponse:
 
         try:
             article = await extract_article_content(url)
+            assert bookmark.id is not None  # upsert_bookmark always returns an id
             await db.set_bookmark_content(bookmark.id, article.text, article.word_count)
             word_count = article.word_count
         except (OSError, ValueError) as exc:
@@ -193,7 +200,7 @@ async def api_save(request: Request) -> JSONResponse:
                 "title": bookmark.title,
                 "description": bookmark.description,
                 "word_count": word_count,
-                "message": f"Saved! Connect via MCP to tag and summarize.",
+                "message": "Saved! Connect via MCP to tag and summarize.",
             }
         )
     finally:
@@ -280,7 +287,9 @@ async def api_get_bookmark(request: Request) -> JSONResponse:
         payload = bm.model_dump(mode="json")
         content = payload.get("content") or ""
         if isinstance(content, str) and len(content) > _MAX_BOOKMARK_CONTENT_JSON:
-            payload["content"] = content[:_MAX_BOOKMARK_CONTENT_JSON] + "\n…[truncated for JSON response]"
+            payload["content"] = (
+                content[:_MAX_BOOKMARK_CONTENT_JSON] + "\n…[truncated for JSON response]"
+            )
             payload["content_truncated"] = True
         return JSONResponse(payload)
     finally:
@@ -296,6 +305,7 @@ async def api_create_tag_rest(request: Request) -> JSONResponse:
     body_model, err = await parse_request_body(request, CreateTagRequest)
     if err is not None:
         return err
+    assert body_model is not None  # parse_request_body invariant
     slug = body_model.slug.strip()
     name = body_model.name.strip()
     description = body_model.description.strip()
@@ -335,6 +345,7 @@ async def api_bookmark_summary(request: Request) -> JSONResponse:
     body_model, err = await parse_request_body(request, BookmarkSummaryRequest)
     if err is not None:
         return err
+    assert body_model is not None  # parse_request_body invariant
     db = await _db(request)
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
@@ -361,6 +372,7 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
     body_model, err = await parse_request_body(request, BookmarkTagsRequest)
     if err is not None:
         return err
+    assert body_model is not None  # parse_request_body invariant
     slugs = body_model.tag_slugs
     db = await _db(request)
     try:
@@ -407,7 +419,8 @@ async def api_usage(request: Request) -> JSONResponse:
                 status=403,
                 details=exc.to_envelope()["details"],
             )
-        n = await db.count_usage_events_month(tenant)
+        # count_usage_events_month is SQLite-only (usage_metering capability above).
+        n = await cast(Any, db).count_usage_events_month(tenant)
     finally:
         await db.close()
     limit = int(os.environ.get("MCP_MONTHLY_USAGE_LIMIT", "0"))
@@ -461,6 +474,7 @@ async def api_ensemble(request: Request) -> JSONResponse:
     body_model, err = await parse_request_body(request, EnsembleRequest)
     if err is not None:
         return err
+    assert body_model is not None  # parse_request_body invariant
 
     task = body_model.task.strip()
     mlist = None

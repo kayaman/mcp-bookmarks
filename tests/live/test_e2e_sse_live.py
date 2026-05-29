@@ -15,13 +15,13 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = [pytest.mark.live, pytest.mark.asyncio]
 
 
 async def find_free_port() -> int:
     """Find a free TCP port."""
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -60,7 +60,9 @@ async def test_sse_end_to_end():
 
     print(f"\n⏳ Starting server on port {port}...")
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "mcp_bookmarks",
+        sys.executable,
+        "-m",
+        "mcp_bookmarks",
         env=env,
         cwd=str(Path(__file__).parent.parent),
         stdout=asyncio.subprocess.PIPE,
@@ -80,7 +82,7 @@ async def test_sse_end_to_end():
         async with sse_client(sse_url) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
-                print(f"✓ MCP session initialized")
+                print("✓ MCP session initialized")
 
                 # ── List tools ──
                 tools_result = await session.list_tools()
@@ -97,26 +99,33 @@ async def test_sse_end_to_end():
                 # ── get_stats (empty DB) ──
                 result = await session.call_tool("get_stats", {})
                 import json
+
                 stats = json.loads(result.content[0].text)
                 assert stats["total_bookmarks"] == 0
                 assert stats["total_tags"] == 0
                 print(f"✓ get_stats: {stats}")
 
                 # ── create_tag ──
-                result = await session.call_tool("create_tag", {
-                    "slug": "python",
-                    "name": "Python",
-                    "description": "Python programming language",
-                })
+                result = await session.call_tool(
+                    "create_tag",
+                    {
+                        "slug": "python",
+                        "name": "Python",
+                        "description": "Python programming language",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert "created" in data
                 print(f"✓ create_tag: {data['created']['slug']}")
 
-                result = await session.call_tool("create_tag", {
-                    "slug": "web",
-                    "name": "Web",
-                    "description": "Web technologies and development",
-                })
+                result = await session.call_tool(
+                    "create_tag",
+                    {
+                        "slug": "web",
+                        "name": "Web",
+                        "description": "Web technologies and development",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert "created" in data
                 print(f"✓ create_tag: {data['created']['slug']}")
@@ -134,88 +143,120 @@ async def test_sse_end_to_end():
                 print(f"✓ get_tags(query='python'): {data['total']} result")
 
                 # ── save_bookmark ──
-                result = await session.call_tool("save_bookmark", {
-                    "url": "https://github.com/modelcontextprotocol/python-sdk",
-                })
+                result = await session.call_tool(
+                    "save_bookmark",
+                    {
+                        "url": "https://github.com/modelcontextprotocol/python-sdk",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 bookmark_id = data["bookmark_id"]
                 assert bookmark_id is not None
                 print(f"✓ save_bookmark: id={bookmark_id}, title='{data.get('title', '')[:50]}'")
 
                 # ── tag_bookmark ──
-                result = await session.call_tool("tag_bookmark", {
-                    "bookmark_id": bookmark_id,
-                    "tag_slugs": ["python", "web"],
-                })
+                result = await session.call_tool(
+                    "tag_bookmark",
+                    {
+                        "bookmark_id": bookmark_id,
+                        "tag_slugs": ["python", "web"],
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert "python" in data["tags"]
                 assert "web" in data["tags"]
                 print(f"✓ tag_bookmark: {data['tags']}")
 
                 # ── set_summary ──
-                result = await session.call_tool("set_summary", {
-                    "bookmark_id": bookmark_id,
-                    "summary": "Official MCP Python SDK for building servers and clients.",
-                })
+                result = await session.call_tool(
+                    "set_summary",
+                    {
+                        "bookmark_id": bookmark_id,
+                        "summary": "Official MCP Python SDK for building servers and clients.",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert data["status"] == "ok"
-                print(f"✓ set_summary: ok")
+                print("✓ set_summary: ok")
 
                 # ── read_bookmark ──
-                result = await session.call_tool("read_bookmark", {
-                    "bookmark_id": bookmark_id,
-                })
+                result = await session.call_tool(
+                    "read_bookmark",
+                    {
+                        "bookmark_id": bookmark_id,
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert data["summary"] is not None
                 assert data["tags"] == ["python", "web"]
                 print(f"✓ read_bookmark: tags={data['tags']}, summary='{data['summary'][:50]}...'")
 
                 # ── search_bookmarks ──
-                result = await session.call_tool("search_bookmarks", {
-                    "tag": "python",
-                })
+                result = await session.call_tool(
+                    "search_bookmarks",
+                    {
+                        "tag": "python",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert data["total"] == 1
                 print(f"✓ search_bookmarks(tag='python'): {data['total']} result")
 
                 # ── untag_bookmark ──
-                result = await session.call_tool("untag_bookmark", {
-                    "bookmark_id": bookmark_id,
-                    "tag_slugs": ["web"],
-                })
+                result = await session.call_tool(
+                    "untag_bookmark",
+                    {
+                        "bookmark_id": bookmark_id,
+                        "tag_slugs": ["web"],
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert "web" not in data["remaining_tags"]
                 assert "python" in data["remaining_tags"]
                 print(f"✓ untag_bookmark: removed 'web', remaining={data['remaining_tags']}")
 
                 # ── update_tag ──
-                result = await session.call_tool("update_tag", {
-                    "slug": "python",
-                    "new_description": "Python language, frameworks, and ecosystem tools",
-                })
+                result = await session.call_tool(
+                    "update_tag",
+                    {
+                        "slug": "python",
+                        "new_description": "Python language, frameworks, and ecosystem tools",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert "updated" in data
                 print(f"✓ update_tag: desc='{data['updated']['description'][:40]}...'")
 
                 # ── create + merge_tags ──
-                await session.call_tool("create_tag", {
-                    "slug": "py",
-                    "name": "py",
-                    "description": "Shorthand for Python (should be merged)",
-                })
+                await session.call_tool(
+                    "create_tag",
+                    {
+                        "slug": "py",
+                        "name": "py",
+                        "description": "Shorthand for Python (should be merged)",
+                    },
+                )
                 # Tag the bookmark with the duplicate
-                await session.call_tool("tag_bookmark", {
-                    "bookmark_id": bookmark_id,
-                    "tag_slugs": ["py"],
-                })
-                result = await session.call_tool("merge_tags", {
-                    "source_slug": "py",
-                    "target_slug": "python",
-                })
+                await session.call_tool(
+                    "tag_bookmark",
+                    {
+                        "bookmark_id": bookmark_id,
+                        "tag_slugs": ["py"],
+                    },
+                )
+                result = await session.call_tool(
+                    "merge_tags",
+                    {
+                        "source_slug": "py",
+                        "target_slug": "python",
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert data["source_deleted"] == "py"
                 assert data["bookmarks_reassigned"] == 1
-                print(f"✓ merge_tags: merged 'py' → 'python', {data['bookmarks_reassigned']} reassigned")
+                print(
+                    f"✓ merge_tags: merged 'py' → 'python', {data['bookmarks_reassigned']} reassigned"
+                )
 
                 # Verify py is gone
                 result = await session.call_tool("get_tags", {"query": "py"})
@@ -223,12 +264,15 @@ async def test_sse_end_to_end():
                 slugs = [t["slug"] for t in data["tags"]]
                 assert "py" not in slugs
                 assert "python" in slugs
-                print(f"✓ Verified 'py' tag no longer exists")
+                print("✓ Verified 'py' tag no longer exists")
 
                 # ── delete_bookmark ──
-                result = await session.call_tool("delete_bookmark", {
-                    "bookmark_id": bookmark_id,
-                })
+                result = await session.call_tool(
+                    "delete_bookmark",
+                    {
+                        "bookmark_id": bookmark_id,
+                    },
+                )
                 data = json.loads(result.content[0].text)
                 assert data["status"] == "deleted"
                 print(f"✓ delete_bookmark: id={bookmark_id}")
@@ -254,7 +298,7 @@ async def test_sse_end_to_end():
                 print(f"✓ Listed {len(template_uris)} resource templates: {template_uris}")
 
         print(f"\n{'=' * 60}")
-        print(f"  🎉 ALL E2E TESTS PASSED")
+        print("  🎉 ALL E2E TESTS PASSED")
         print(f"{'=' * 60}")
 
     finally:
@@ -262,9 +306,7 @@ async def test_sse_end_to_end():
         proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
         db_path.unlink(missing_ok=True)
-        print(f"\n✓ Server shut down, temp DB cleaned up")
-
-
+        print("\n✓ Server shut down, temp DB cleaned up")

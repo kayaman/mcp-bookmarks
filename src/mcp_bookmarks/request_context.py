@@ -59,8 +59,8 @@ def reset_request_identity(tokens: tuple[Any, Any]) -> None:
 
 
 __all__ = [
-    "current_user_id",
     "current_tenant_id",
-    "set_request_identity",
+    "current_user_id",
     "reset_request_identity",
+    "set_request_identity",
 ]

@@ -66,7 +66,7 @@ def require_api_key(headers: Any) -> tuple[bool, str | None]:
     return True, tenant
 
 
-def resolve_tenant(headers: Any) -> "Tenant":
+def resolve_tenant(headers: Any) -> Tenant:
     """Resolve a Tenant from request headers.
 
     Uses the same ``MCP_API_KEYS`` map as ``require_api_key``. Falls back to

@@ -11,14 +11,13 @@ import pytest
 
 from mcp_bookmarks import usage_meter
 
-
 pytestmark = pytest.mark.asyncio
 
 
 async def test_quota_disabled_when_limit_zero(monkeypatch, db, tmp_db_path):
     """With limit 0 (default), check_quota_sqlite always returns (True, 0, 0)."""
     monkeypatch.setattr(usage_meter, "_MONTHLY_LIMIT", 0)
-    ok, used, limit = await usage_meter.check_quota_sqlite(tmp_db_path, "tenant-a")
+    ok, _used, limit = await usage_meter.check_quota_sqlite(tmp_db_path, "tenant-a")
     assert ok is True
     assert limit == 0
 
