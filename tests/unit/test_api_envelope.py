@@ -1,16 +1,11 @@
 """Standardized REST error envelope + request validation (WDN-396 / OSS-6).
 
-Pure unit tests; no HTTP server, no I/O. After WDN-395 lands these move
-to tests/unit/.
+Pure unit tests; no HTTP server, no I/O.
 """
 
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
 
