@@ -16,7 +16,11 @@ MAX_CANDIDATE_CHARS = 12_000
 
 
 def _gateway_base() -> str:
-    return os.environ.get("AI_GATEWAY_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    return (
+        os.environ.get("AI_GATEWAY_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    )
 
 
 def _api_key() -> str:
@@ -183,9 +187,7 @@ async def run_ensemble_with_judge(
     ]
 
     async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-        _, judge_raw, jerr = await _chat_completion(
-            client, judge, judge_messages, temperature=0.2
-        )
+        _, judge_raw, jerr = await _chat_completion(client, judge, judge_messages, temperature=0.2)
 
     if jerr or not judge_raw:
         return {
@@ -206,7 +208,9 @@ async def run_ensemble_with_judge(
             raise ValueError("empty answer")
         # Map chosen_index to model label among successful only
         success_models = [c["model"] for c in candidates if c.get("content")]
-        winner_model = success_models[chosen] if 0 <= chosen < len(success_models) else success_models[0]
+        winner_model = (
+            success_models[chosen] if 0 <= chosen < len(success_models) else success_models[0]
+        )
         return {
             "ok": True,
             "partial": False,

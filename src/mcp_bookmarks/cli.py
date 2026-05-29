@@ -25,14 +25,13 @@ Usage:
     python -m mcp_bookmarks.cli show 42
 """
 
-import asyncio
 import argparse
+import asyncio
 import os
-import sys
 from pathlib import Path
 
-from .db import Database, DEFAULT_DB_PATH
-from .scraper import extract_og_metadata, extract_article_content
+from .db import DEFAULT_DB_PATH, Database
+from .scraper import extract_article_content, extract_og_metadata
 
 
 def get_db() -> Database:
@@ -65,9 +64,10 @@ async def cmd_save(args):
     print(f"   ✓ Saved bookmark id={bookmark.id}")
 
     if not args.no_content:
-        print(f"⏳ Extracting article content...")
+        print("⏳ Extracting article content...")
         try:
             article = await extract_article_content(args.url)
+            assert bookmark.id is not None  # SQLite path always assigns an integer id
             await db.set_bookmark_content(bookmark.id, article.text, article.word_count)
             print(f"   ✓ Extracted {article.word_count} words via {article.extraction_method}")
         except Exception as e:
@@ -176,11 +176,11 @@ async def cmd_show(args):
     print(f"  Updated:     {bookmark.updated_at}")
 
     if bookmark.summary:
-        print(f"\n  📝 Summary:")
+        print("\n  📝 Summary:")
         print(f"  {bookmark.summary}")
 
     if bookmark.content and args.content:
-        print(f"\n  📄 Content (first 2000 chars):")
+        print("\n  📄 Content (first 2000 chars):")
         print(f"  {bookmark.content[:2000]}")
 
     await db.close()
@@ -192,20 +192,16 @@ async def cmd_stats(args):
     await db.connect()
     stats = await db.get_stats()
 
-    print(f"📊 Knowledge Base Stats")
+    print("📊 Knowledge Base Stats")
     print(f"   Bookmarks: {stats['total_bookmarks']}")
     print(f"   Tags:      {stats['total_tags']}")
 
     # Extra: count bookmarks with content/summaries
-    cursor = await db.db.execute(
-        "SELECT COUNT(*) as c FROM bookmarks WHERE content IS NOT NULL"
-    )
+    cursor = await db.db.execute("SELECT COUNT(*) as c FROM bookmarks WHERE content IS NOT NULL")
     r = await cursor.fetchone()
     print(f"   With content: {r['c']}")
 
-    cursor = await db.db.execute(
-        "SELECT COUNT(*) as c FROM bookmarks WHERE summary IS NOT NULL"
-    )
+    cursor = await db.db.execute("SELECT COUNT(*) as c FROM bookmarks WHERE summary IS NOT NULL")
     r = await cursor.fetchone()
     print(f"   With summary: {r['c']}")
 

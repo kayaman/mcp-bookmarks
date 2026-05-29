@@ -22,7 +22,6 @@ from starlette.requests import Request
 
 from .logging_config import correlation_id_var
 
-
 _HEADER = "x-correlation-id"
 
 

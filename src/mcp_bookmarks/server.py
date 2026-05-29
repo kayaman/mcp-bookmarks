@@ -11,29 +11,29 @@ Run:
     uv run python -m mcp_bookmarks.server
 """
 
-import os
+import contextlib
 import json
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import Context, FastMCP
 
-from .backend import UnsupportedCapability, require_capability
-from .db import Database, DEFAULT_DB_PATH
-from .db import _coerce_sqlite_bookmark_id
-from .scraper import extract_og_metadata, extract_article_content
-from .models import OGMetadata, Tag, Bookmark
+from .backend import BookmarkBackend, UnsupportedCapability, require_capability
+from .db import DEFAULT_DB_PATH, Database, _coerce_sqlite_bookmark_id
+from .models import Bookmark, OGMetadata, Tag
+from .scraper import extract_article_content, extract_og_metadata
 from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
-
 
 # ── Lifespan: DB connection lifecycle ─────────────────────────────
 
 
 @dataclass
 class AppContext:
-    db: Database
+    db: BookmarkBackend
     tenant_id: str = "default"
 
 
@@ -65,8 +65,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     tenant_id = tid or os.environ.get("DYNAMODB_ORG_ID", "default")
     tenant = Tenant(organization_id=tenant_id)
 
+    db: BookmarkBackend
     if dynamo_mode:
         from .dynamodb import DynamoDBDatabase
+
         db = DynamoDBDatabase(tenant=tenant)
     else:
         db = Database(db_path, tenant_id=tenant_id)
@@ -86,7 +88,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         await db.close()
 
 
-async def _open_db_for_ready():
+async def _open_db_for_ready() -> BookmarkBackend:
     """Open the active backend the same way app_lifespan does — used by /ready.
 
     Kept thin so the readiness path bypasses MCP / FastMCP scaffolding and
@@ -98,6 +100,7 @@ async def _open_db_for_ready():
     db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
     tenant_id = os.environ.get("DYNAMODB_ORG_ID", "default")
 
+    db: BookmarkBackend
     if dynamo_mode:
         from .dynamodb import DynamoDBDatabase
 
@@ -132,8 +135,8 @@ mcp = FastMCP(
 )
 
 
-def _get_db(ctx: Context) -> Database:
-    """Extract the Database from lifespan context."""
+def _get_db(ctx: Context) -> BookmarkBackend:
+    """Extract the active backend from lifespan context."""
     return ctx.request_context.lifespan_context.db
 
 
@@ -199,7 +202,7 @@ async def save_bookmark(
     IMPORTANT: After saving, call get_tags() to see existing tags
     before creating new ones.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
 
@@ -210,7 +213,10 @@ async def save_bookmark(
         og = OGMetadata(url=url)
         await ctx.warning(f"Could not fetch OG metadata: {e}")
 
-    bookmark = await db.upsert_bookmark(
+    # bookmark_type / flow_id / source are DynamoDB extensions to upsert_bookmark.
+    # SQLite ignores them; the cast suppresses the protocol-vs-concrete mismatch.
+    # Real fix lives in WDN-393 phase 2 (handler/service extraction).
+    bookmark = await cast(Any, db).upsert_bookmark(
         url=og.url,
         title=title or og.title,
         description=og.description,
@@ -248,7 +254,7 @@ async def extract_content(bookmark_id: int | str, ctx: Context) -> str:
     Args:
         bookmark_id: The bookmark ID (returned by save_bookmark).
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
@@ -256,13 +262,17 @@ async def extract_content(bookmark_id: int | str, ctx: Context) -> str:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
 
     if bookmark.content:
-        await _mcp_record("mcp_extract_content", {"bookmark_id": str(bookmark_id), "status": "already_extracted"})
+        await _mcp_record(
+            "mcp_extract_content", {"bookmark_id": str(bookmark_id), "status": "already_extracted"}
+        )
         return json.dumps(
             {
                 "bookmark_id": bookmark_id,
                 "word_count": bookmark.word_count,
                 "status": "already_extracted",
-                "content_preview": bookmark.content[:500] + "..." if len(bookmark.content) > 500 else bookmark.content,
+                "content_preview": bookmark.content[:500] + "..."
+                if len(bookmark.content) > 500
+                else bookmark.content,
             },
             ensure_ascii=False,
         )
@@ -292,8 +302,6 @@ async def extract_content(bookmark_id: int | str, ctx: Context) -> str:
     )
 
 
-
-
 @mcp.tool()
 async def set_bookmark_body(bookmark_id: int | str, text: str, ctx: Context) -> str:
     """Store full article text when you already fetched it elsewhere (e.g. Bright Data or Tavily MCP).
@@ -301,7 +309,7 @@ async def set_bookmark_body(bookmark_id: int | str, text: str, ctx: Context) -> 
     Same persistence as extract_content but no HTTP download. Use after save_bookmark when
     another tool returned the page body.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
@@ -336,7 +344,7 @@ async def read_bookmark(bookmark_id: int | str, ctx: Context) -> str:
     Args:
         bookmark_id: The bookmark ID.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
@@ -386,7 +394,7 @@ async def get_tags(
     Args:
         query: Optional search filter (partial match on slug/name/description).
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
 
@@ -437,14 +445,17 @@ async def create_tag(
         name: Human-readable label. E.g. 'Machine Learning'.
         description: Scope of this tag — what topics it covers and when to use it.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
 
     existing = await db.get_tag_by_slug(slug)
     if existing:
         return json.dumps(
-            {"error": f"Tag '{slug}' already exists.", "existing_tag": existing.model_dump(mode="json")},
+            {
+                "error": f"Tag '{slug}' already exists.",
+                "existing_tag": existing.model_dump(mode="json"),
+            },
             ensure_ascii=False,
         )
 
@@ -471,7 +482,7 @@ async def tag_bookmark(
         bookmark_id: The bookmark ID (returned by save_bookmark).
         tag_slugs: List of tag slugs to assign. E.g. ['python', 'web-scraping'].
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
 
@@ -513,11 +524,12 @@ async def search_bookmarks(
         cursor: Opaque pagination cursor returned by a prior call as
             ``nextCursor``. Pass it back to fetch the next page.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     if db.capabilities.paged_search:
-        bookmarks, next_cursor = await db.search_bookmarks_paged(
+        # search_bookmarks_paged lives only on DynamoDBDatabase; cap-gate above.
+        bookmarks, next_cursor = await cast(Any, db).search_bookmarks_paged(
             query=query, tag=tag, limit=limit, cursor=cursor
         )
     else:
@@ -566,7 +578,7 @@ async def set_summary(
         bookmark_id: The bookmark ID.
         summary: A concise summary of the bookmark's content.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     await db.set_bookmark_summary(bookmark_id, summary)
@@ -577,7 +589,7 @@ async def set_summary(
 @mcp.tool()
 async def get_stats(ctx: Context = None) -> str:
     """Get knowledge base statistics (total bookmarks, total tags)."""
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     stats = await db.get_stats()
@@ -596,7 +608,7 @@ async def delete_bookmark(bookmark_id: int | str, ctx: Context = None) -> str:
     Args:
         bookmark_id: The bookmark ID to delete.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     deleted = await db.delete_bookmark(bookmark_id)
@@ -623,7 +635,7 @@ async def update_tag(
         new_name: New human-readable name (optional).
         new_description: New scope description (optional).
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     tag = await db.update_tag(slug, new_name=new_name, new_description=new_description)
@@ -642,7 +654,7 @@ async def delete_tag(slug: str, ctx: Context = None) -> str:
     Args:
         slug: The tag slug to delete.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     deleted = await db.delete_tag(slug)
@@ -668,7 +680,7 @@ async def merge_tags(
         source_slug: The tag to merge FROM (will be deleted).
         target_slug: The tag to merge INTO (will absorb bookmarks).
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     try:
@@ -691,7 +703,7 @@ async def untag_bookmark(
         bookmark_id: The bookmark ID.
         tag_slugs: List of tag slugs to remove.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     bookmark = await db.untag_bookmark(bookmark_id, tag_slugs)
@@ -725,7 +737,7 @@ async def export_bookmarks(
         format: Output format — 'json', 'markdown', or 'opml'.
         tag: Optional tag filter — export only bookmarks with this tag.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
 
@@ -739,14 +751,18 @@ async def export_bookmarks(
         bookmarks = [Bookmark(**b) for b in bookmarks_data]
 
     if format == "json":
-        export = await db.get_full_export() if not tag else {
-            "tag_filter": tag,
-            "total": len(bookmarks),
-            "bookmarks": [
-                {"url": b.url, "title": b.title, "tags": b.tags, "summary": b.summary}
-                for b in bookmarks
-            ],
-        }
+        export = (
+            await db.get_full_export()
+            if not tag
+            else {
+                "tag_filter": tag,
+                "total": len(bookmarks),
+                "bookmarks": [
+                    {"url": b.url, "title": b.title, "tags": b.tags, "summary": b.summary}
+                    for b in bookmarks
+                ],
+            }
+        )
         await _mcp_record("mcp_export_bookmarks", {"format": format, "tag": tag})
         return json.dumps(export, ensure_ascii=False, indent=2)
 
@@ -759,7 +775,7 @@ async def export_bookmarks(
         # Group by tags
         tag_groups: dict[str, list] = {}
         for b in bookmarks:
-            for t in (b.tags or ["untagged"]):
+            for t in b.tags or ["untagged"]:
                 tag_groups.setdefault(t, []).append(b)
 
         for tag_slug in sorted(tag_groups.keys()):
@@ -788,8 +804,7 @@ async def export_bookmarks(
             url = b.url.replace("&", "&amp;")
             tags_str = ",".join(b.tags) if b.tags else ""
             lines.append(
-                f'    <outline text="{title}" htmlUrl="{url}" '
-                f'type="link" category="{tags_str}"/>'
+                f'    <outline text="{title}" htmlUrl="{url}" type="link" category="{tags_str}"/>'
             )
         lines.extend(["  </body>", "</opml>"])
         await _mcp_record("mcp_export_bookmarks", {"format": format, "tag": tag})
@@ -805,7 +820,7 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
 
     Stores vectors in local SQLite for semantic_search_bookmarks. Not available in DYNAMODB_MODE.
     """
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     try:
@@ -817,11 +832,15 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"}, ensure_ascii=False)
     bid = _coerce_sqlite_bookmark_id(bookmark_id)
     if bid is None:
-        return json.dumps({"error": "Expected integer bookmark id in SQLite mode."}, ensure_ascii=False)
+        return json.dumps(
+            {"error": "Expected integer bookmark id in SQLite mode."}, ensure_ascii=False
+        )
     parts = [bookmark.title or "", bookmark.description or "", (bookmark.content or "")[:20_000]]
     text = "\n".join(p for p in parts if p).strip()
     if not text:
-        return json.dumps({"error": "No text to embed; run extract_content first."}, ensure_ascii=False)
+        return json.dumps(
+            {"error": "No text to embed; run extract_content first."}, ensure_ascii=False
+        )
     from .rag import embed_model, embed_texts
 
     try:
@@ -829,7 +848,8 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
     model = embed_model()
-    await db.upsert_bookmark_embedding(bid, model, vec)
+    # upsert_bookmark_embedding is SQLite-only (semantic_search capability).
+    await cast(Any, db).upsert_bookmark_embedding(bid, model, vec)
     await _mcp_record("mcp_index_bookmark_embedding", {"bookmark_id": str(bid)})
     return json.dumps(
         {"status": "indexed", "bookmark_id": bid, "model": model, "chars_used": len(text)},
@@ -840,7 +860,7 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
 @mcp.tool()
 async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = None) -> str:
     """Vector search over indexed bookmarks (SQLite + OpenAI embeddings only)."""
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
     try:
@@ -854,7 +874,8 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
     model = embed_model()
-    rows = await db.get_all_embeddings(model)
+    # get_all_embeddings is SQLite-only (semantic_search capability).
+    rows = await cast(Any, db).get_all_embeddings(model)
     if not rows:
         return json.dumps(
             {
@@ -883,7 +904,11 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
             }
         )
     await _mcp_record("mcp_semantic_search_bookmarks", {"limit": limit})
-    return json.dumps({"query": query, "model": model, "total_indexed": len(rows), "results": out}, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {"query": query, "model": model, "total_indexed": len(rows), "results": out},
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 @mcp.tool()
@@ -913,7 +938,7 @@ async def ensemble_with_judge(
             ensure_ascii=False,
             indent=2,
         )
-    if (qb := await _mcp_quota_block()):
+    if qb := await _mcp_quota_block():
         return qb
 
     mlist = None
@@ -1120,8 +1145,8 @@ def create_combined_app():
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.cors import CORSMiddleware
-    from starlette.routing import Mount, Route
     from starlette.responses import JSONResponse, RedirectResponse
+    from starlette.routing import Mount, Route
 
     from .api import (
         ai_gateway_page,
@@ -1158,7 +1183,7 @@ def create_combined_app():
         ready_log = logging.getLogger("mcp_bookmarks.health")
         try:
             db = await asyncio.wait_for(_open_db_for_ready(), timeout=3.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             ready_log.warning("ready_check_failed", extra={"reason": "open_timeout"})
             return JSONResponse(
                 {"status": "not_ready", "reason": "backend open timed out"},
@@ -1183,10 +1208,9 @@ def create_combined_app():
                 status_code=503,
             )
         finally:
-            try:
+            # Close failure must not flip /ready to not_ready — the ping already proved liveness.
+            with contextlib.suppress(Exception):
                 await db.close()
-            except Exception:  # noqa: BLE001 — close failure must not flip ready
-                pass
         return JSONResponse({"status": "ready"})
 
     @asynccontextmanager
@@ -1219,6 +1243,7 @@ def create_combined_app():
     from .bearer_auth import BearerAuthMiddleware
     from .correlation import CorrelationMiddleware
     from .security_headers import SecurityHeadersMiddleware
+
     # Order matters:
     #   - GZip is outermost so the final byte stream (with every other
     #     middleware's mutations baked in) gets compressed in one pass.
@@ -1242,7 +1267,13 @@ def create_combined_app():
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
-            allow_headers=["Authorization", "Content-Type", "Accept", "Mcp-Session-Id", "X-Correlation-ID"],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "Accept",
+                "Mcp-Session-Id",
+                "X-Correlation-ID",
+            ],
             expose_headers=["Mcp-Session-Id", "X-Correlation-ID"],
             max_age=600,
         ),
@@ -1261,7 +1292,7 @@ def create_combined_app():
             Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
             Mount("/api", app=api_app),
             *streamable_app.routes,  # Route(path='/mcp', ...)
-            *sse_app.routes,          # Route(path='/sse', ...) + Mount(path='/messages', ...)
+            *sse_app.routes,  # Route(path='/sse', ...) + Mount(path='/messages', ...)
         ],
     )
     return app
@@ -1274,7 +1305,7 @@ def main():
     port = int(os.environ.get("MCP_PORT", "8000"))
     host = os.environ.get("MCP_HOST", "0.0.0.0")
 
-    print(f"🚀 MCP Bookmarks Server")
+    print("🚀 MCP Bookmarks Server")
     print(f"   MCP SSE:          http://{host}:{port}/sse")
     print(f"   MCP Streamable:   http://{host}:{port}/mcp")
     print(f"   REST API:         http://{host}:{port}/api/")

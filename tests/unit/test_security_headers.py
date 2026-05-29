@@ -18,7 +18,6 @@ from mcp_bookmarks.security_headers import (
     compute_script_hash,
 )
 
-
 _HASH = compute_script_hash("(function(){var x=1;})();")
 
 
@@ -67,8 +66,7 @@ def test_x_content_type_options_on_sse(client):
 
 def test_referrer_policy_on_html(client):
     assert (
-        client.get("/bookmarklet").headers["Referrer-Policy"]
-        == "strict-origin-when-cross-origin"
+        client.get("/bookmarklet").headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     )
 
 

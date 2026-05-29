@@ -16,9 +16,8 @@ Run defaults to "not live": see `pyproject.toml` `[tool.pytest.ini_options]`.
 from __future__ import annotations
 
 import sys
-import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
@@ -42,7 +41,7 @@ def tmp_db_path(tmp_path: Path) -> Path:
 
 
 @pytest_asyncio.fixture
-async def db(tmp_db_path: Path) -> "AsyncIterator":
+async def db(tmp_db_path: Path) -> AsyncIterator:
     """Connected Database instance backed by a fresh SQLite file. Closes on teardown."""
     from mcp_bookmarks.db import Database
 

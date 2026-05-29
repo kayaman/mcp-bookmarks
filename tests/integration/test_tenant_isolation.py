@@ -6,10 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from mcp_bookmarks.auth import resolve_tenant
 from mcp_bookmarks.db import Database
 from mcp_bookmarks.models import Tenant
-from mcp_bookmarks.auth import resolve_tenant
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  SQLite tenant isolation
@@ -20,7 +19,9 @@ class TestSQLiteTenantIsolation(unittest.IsolatedAsyncioTestCase):
     """Verify that two tenants cannot read each other's data via SQLite backend."""
 
     async def asyncSetUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        # NamedTemporaryFile is kept open across setup/teardown so a `with` block
+        # doesn't fit; the per-test asyncTearDown cleans up explicitly.
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)  # noqa: SIM115
         self.db_path = Path(self._tmp.name)
 
         self.db_a = Database(self.db_path, tenant_id="org-a")
@@ -67,8 +68,8 @@ class TestSQLiteTenantIsolation(unittest.IsolatedAsyncioTestCase):
     # ── Bookmarks ─────────────────────────────────────────────────
 
     async def test_bookmarks_are_scoped_per_tenant(self):
-        bk_a = await self.db_a.upsert_bookmark("https://a.example.com", title="A's bookmark")
-        bk_b = await self.db_b.upsert_bookmark("https://b.example.com", title="B's bookmark")
+        await self.db_a.upsert_bookmark("https://a.example.com", title="A's bookmark")
+        await self.db_b.upsert_bookmark("https://b.example.com", title="B's bookmark")
 
         results_a = await self.db_a.search_bookmarks()
         results_b = await self.db_b.search_bookmarks()
@@ -184,8 +185,9 @@ class TestSQLiteTenantIsolation(unittest.IsolatedAsyncioTestCase):
 class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
     """Verify DynamoDBDatabase uses per-instance Tenant for filtering."""
 
-    def _make_db(self, org_id: str) -> "DynamoDBDatabase":
+    def _make_db(self, org_id: str):  # -> DynamoDBDatabase
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
         tenant = Tenant(organization_id=org_id, user_id="test-user")
         with patch("mcp_bookmarks.dynamodb.boto3"):
             db = DynamoDBDatabase(tenant=tenant)
@@ -193,6 +195,7 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
 
     async def test_org_id_from_tenant_not_env(self):
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
         tenant = Tenant(organization_id="org-from-arg")
         with patch("mcp_bookmarks.dynamodb.boto3"):
             db = DynamoDBDatabase(tenant=tenant)
@@ -201,6 +204,7 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
     async def test_default_tenant_org_id_is_none(self):
         """organization_id='default' should resolve to None (no filtering)."""
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
         tenant = Tenant(organization_id="default")
         with patch("mcp_bookmarks.dynamodb.boto3"):
             db = DynamoDBDatabase(tenant=tenant)
@@ -208,6 +212,7 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
 
     async def test_item_org_visible_with_real_org(self):
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
         tenant = Tenant(organization_id="org-a")
         with patch("mcp_bookmarks.dynamodb.boto3"):
             db = DynamoDBDatabase(tenant=tenant)
@@ -218,6 +223,7 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
 
     async def test_item_org_visible_default_tenant_sees_all(self):
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
         tenant = Tenant(organization_id="default")
         with patch("mcp_bookmarks.dynamodb.boto3"):
             db = DynamoDBDatabase(tenant=tenant)
@@ -227,6 +233,7 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
 
     async def test_upsert_bookmark_uses_tenant_org(self):
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
+
         tenant = Tenant(organization_id="org-a", user_id="user-a")
         with patch("mcp_bookmarks.dynamodb.boto3") as mock_boto:
             mock_table = MagicMock()
@@ -242,7 +249,9 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
 
         mock_table.put_item = capture_put_item
 
-        with patch("mcp_bookmarks.dynamodb._run", side_effect=lambda fn, *a, **kw: asyncio.coroutine(fn)()):
+        with patch(
+            "mcp_bookmarks.dynamodb._run", side_effect=lambda fn, *a, **kw: asyncio.coroutine(fn)()
+        ):
             pass
 
         # Verify tenant properties are set correctly
@@ -252,6 +261,7 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
     async def test_backward_compat_env_vars(self):
         """DynamoDBDatabase() with no tenant arg should read env vars."""
         import os
+
         from mcp_bookmarks.dynamodb import DynamoDBDatabase
 
         with patch.dict(os.environ, {"DYNAMODB_ORG_ID": "env-org", "DYNAMODB_USER_ID": "env-user"}):
@@ -268,27 +278,30 @@ class TestDynamoDBTenantIsolation(unittest.IsolatedAsyncioTestCase):
 
 
 class TestResolveTenant(unittest.TestCase):
-
     def test_resolve_tenant_from_api_key(self):
         import os
+
         with patch.dict(os.environ, {"MCP_API_KEYS": "key-abc:org-xyz"}):
             tenant = resolve_tenant({"authorization": "Bearer key-abc"})
         self.assertEqual(tenant.organization_id, "org-xyz")
 
     def test_resolve_tenant_falls_back_to_env(self):
         import os
+
         with patch.dict(os.environ, {"MCP_API_KEYS": "", "DYNAMODB_ORG_ID": "env-org"}):
             tenant = resolve_tenant({})
         self.assertEqual(tenant.organization_id, "env-org")
 
     def test_resolve_tenant_defaults_to_default(self):
         import os
+
         with patch.dict(os.environ, {"MCP_API_KEYS": "", "DYNAMODB_ORG_ID": ""}):
             tenant = resolve_tenant({})
         self.assertEqual(tenant.organization_id, "default")
 
     def test_resolve_tenant_returns_tenant_model(self):
         from mcp_bookmarks.models import Tenant
+
         tenant = resolve_tenant({})
         self.assertIsInstance(tenant, Tenant)
 

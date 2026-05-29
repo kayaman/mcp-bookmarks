@@ -32,7 +32,6 @@ from typing import Any
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-
 _HTML_PATHS = frozenset({"/bookmarklet", "/ai-gateway"})
 _MCP_PREFIXES = ("/sse", "/mcp", "/messages")
 

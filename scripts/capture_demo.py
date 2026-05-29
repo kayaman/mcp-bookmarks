@@ -32,10 +32,10 @@ async def run_demo(base_url: str, api_key: str | None = None):
     sse_url = base_url.rstrip("/") + "/sse"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-    print(f"\n{'='*60}")
-    print(f"  mcp-bookmarks — 5-step demo capture")
+    print(f"\n{'=' * 60}")
+    print("  mcp-bookmarks — 5-step demo capture")
     print(f"  Server: {sse_url}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     async with sse_client(sse_url, headers=headers) as (read, write):
         async with ClientSession(read, write) as session:
@@ -57,7 +57,7 @@ async def run_demo(base_url: str, api_key: str | None = None):
             print(f"    status      = {data.get('status', data.get('message', ''))}")
 
             # ── Step 2: read taxonomy resource ───────────────────────
-            print(f"\n[2] Resource: bookmarks://taxonomy")
+            print("\n[2] Resource: bookmarks://taxonomy")
             resources = await session.list_resources()
             tax_uri = next(
                 (r.uri for r in resources.resources if "taxonomy" in str(r.uri)),
@@ -89,7 +89,7 @@ async def run_demo(base_url: str, api_key: str | None = None):
                 print(f"    word_count = {words}")
 
             # ── Step 4: search_bookmarks ─────────────────────────────
-            print(f"\n[4] search_bookmarks(query='agents')")
+            print("\n[4] search_bookmarks(query='agents')")
             result = await session.call_tool("search_bookmarks", {"query": "agents"})
             out = result.content[0].text if result.content else "[]"
             hits = json.loads(out) if out.startswith("[") or out.startswith("{") else []
@@ -101,17 +101,17 @@ async def run_demo(base_url: str, api_key: str | None = None):
                     print(f"    • {h.get('title', h.get('url', 'unknown'))[:70]}")
 
             # ── Step 5: get_stats ─────────────────────────────────────
-            print(f"\n[5] get_stats() — confirms DynamoDB write")
+            print("\n[5] get_stats() — confirms DynamoDB write")
             result = await session.call_tool("get_stats", {})
             out = result.content[0].text if result.content else "{}"
             data = json.loads(out) if out.startswith("{") else {"raw": out}
             print(f"    total_bookmarks = {data.get('total_bookmarks', '?')}")
             print(f"    total_tags      = {data.get('total_tags', '?')}")
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("  PASS — all 5 steps completed.")
-            print(f"  Use get_bookmark to verify the saved item.")
-            print(f"{'='*60}\n")
+            print("  Use get_bookmark to verify the saved item.")
+            print(f"{'=' * 60}\n")
 
 
 if __name__ == "__main__":

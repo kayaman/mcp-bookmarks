@@ -28,13 +28,10 @@ import logging
 import os
 from contextvars import ContextVar
 
-
 # ── Correlation ID contextvar ──────────────────────────────────────
 
 
-correlation_id_var: ContextVar[str | None] = ContextVar(
-    "correlation_id", default=None
-)
+correlation_id_var: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
 
 # ── Record fields we keep out of the structured payload ────────────
@@ -42,22 +39,36 @@ correlation_id_var: ContextVar[str | None] = ContextVar(
 
 _RESERVED_RECORD_KEYS = frozenset(
     {
-        "name", "msg", "args", "levelname", "levelno", "pathname",
-        "filename", "module", "exc_info", "exc_text", "stack_info",
-        "lineno", "funcName", "created", "msecs", "relativeCreated",
-        "thread", "threadName", "processName", "process",
-        "message", "asctime", "taskName",
+        "name",
+        "msg",
+        "args",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "message",
+        "asctime",
+        "taskName",
     }
 )
 
 
 def _record_extras(record: logging.LogRecord) -> dict:
     """Return only the keys that the caller passed via ``extra=``."""
-    return {
-        k: v
-        for k, v in record.__dict__.items()
-        if k not in _RESERVED_RECORD_KEYS
-    }
+    return {k: v for k, v in record.__dict__.items() if k not in _RESERVED_RECORD_KEYS}
 
 
 # ── Formatters ─────────────────────────────────────────────────────
@@ -68,7 +79,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict = {
-            "ts": _dt.datetime.fromtimestamp(record.created, _dt.timezone.utc).isoformat(),
+            "ts": _dt.datetime.fromtimestamp(record.created, _dt.UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -87,7 +98,8 @@ class PrettyFormatter(logging.Formatter):
     _BASE_FMT = "%(asctime)s %(levelname)-7s %(name)s [cid=%(_cid)s] %(message)s"
 
     def format(self, record: logging.LogRecord) -> str:
-        record._cid = correlation_id_var.get() or "-"  # type: ignore[attr-defined]
+        # _cid is a dynamic attribute consumed by the format string above.
+        record._cid = correlation_id_var.get() or "-"
         base = logging.Formatter(self._BASE_FMT, datefmt="%H:%M:%S").format(record)
         extras = _record_extras(record)
         # Strip the internal _cid we just added.
@@ -132,7 +144,8 @@ def configure_logging(level: int | str | None = None) -> None:
     for existing in list(root.handlers):
         if getattr(existing, "_mcp_bookmarks_managed", False):
             root.removeHandler(existing)
-    setattr(handler, "_mcp_bookmarks_managed", True)
+    # Tag the handler so repeated calls find it via getattr above.
+    handler._mcp_bookmarks_managed = True  # type: ignore[attr-defined]
     root.addHandler(handler)
     root.setLevel(level)
 

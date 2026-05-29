@@ -10,15 +10,12 @@ import io
 import json
 import logging
 
-import pytest
-
 from mcp_bookmarks.logging_config import (
     JsonFormatter,
     PrettyFormatter,
     configure_logging,
     correlation_id_var,
 )
-
 
 # ── JsonFormatter ──────────────────────────────────────────────────
 
@@ -27,8 +24,13 @@ def _make_record(
     *, name: str = "test", level: int = logging.INFO, msg: str = "hello", **extra
 ) -> logging.LogRecord:
     record = logging.LogRecord(
-        name=name, level=level, pathname=__file__, lineno=1,
-        msg=msg, args=None, exc_info=None,
+        name=name,
+        level=level,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=None,
+        exc_info=None,
     )
     for k, v in extra.items():
         setattr(record, k, v)
@@ -106,8 +108,7 @@ def test_configure_logging_does_not_duplicate_handlers(monkeypatch):
     configure_logging()
     configure_logging()  # second call must not double-up
     managed = [
-        h for h in logging.getLogger().handlers
-        if getattr(h, "_mcp_bookmarks_managed", False)
+        h for h in logging.getLogger().handlers if getattr(h, "_mcp_bookmarks_managed", False)
     ]
     assert len(managed) == 1
 
@@ -116,8 +117,7 @@ def test_configure_logging_honors_log_format_env(monkeypatch):
     monkeypatch.setenv("LOG_FORMAT", "json")
     configure_logging()
     managed = next(
-        h for h in logging.getLogger().handlers
-        if getattr(h, "_mcp_bookmarks_managed", False)
+        h for h in logging.getLogger().handlers if getattr(h, "_mcp_bookmarks_managed", False)
     )
     assert isinstance(managed.formatter, JsonFormatter)
 
@@ -127,8 +127,7 @@ def test_configure_logging_auto_picks_pretty_in_dev(monkeypatch):
     monkeypatch.setenv("ENV", "dev")
     configure_logging()
     managed = next(
-        h for h in logging.getLogger().handlers
-        if getattr(h, "_mcp_bookmarks_managed", False)
+        h for h in logging.getLogger().handlers if getattr(h, "_mcp_bookmarks_managed", False)
     )
     assert isinstance(managed.formatter, PrettyFormatter)
 
@@ -138,8 +137,7 @@ def test_configure_logging_auto_picks_json_in_prod(monkeypatch):
     monkeypatch.setenv("ENV", "prod")
     configure_logging()
     managed = next(
-        h for h in logging.getLogger().handlers
-        if getattr(h, "_mcp_bookmarks_managed", False)
+        h for h in logging.getLogger().handlers if getattr(h, "_mcp_bookmarks_managed", False)
     )
     assert isinstance(managed.formatter, JsonFormatter)
 

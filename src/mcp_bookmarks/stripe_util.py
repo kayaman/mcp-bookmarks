@@ -15,7 +15,9 @@ def _signing_key_bytes(secret: str) -> bytes:
     return s.encode("utf-8")
 
 
-def verify_stripe_signature(payload: bytes, sig_header: str | None, secret: str, *, tolerance_sec: int = 300) -> bool:
+def verify_stripe_signature(
+    payload: bytes, sig_header: str | None, secret: str, *, tolerance_sec: int = 300
+) -> bool:
     """Verify ``Stripe-Signature`` header (``t=...,v1=...``)."""
     if not secret or not sig_header:
         return False

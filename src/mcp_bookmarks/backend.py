@@ -106,31 +106,24 @@ class BookmarkBackend(Protocol):
 
     # ── Tag taxonomy ───────────────────────────────────────────────
 
-    async def get_all_tags(self) -> list["Tag"]:
-        ...
+    async def get_all_tags(self) -> list[Tag]: ...
 
-    async def search_tags(self, query: str) -> list["Tag"]:
-        ...
+    async def search_tags(self, query: str) -> list[Tag]: ...
 
-    async def create_tag(self, slug: str, name: str, description: str = "") -> "Tag":
-        ...
+    async def create_tag(self, slug: str, name: str, description: str = "") -> Tag: ...
 
-    async def get_tag_by_slug(self, slug: str) -> "Tag | None":
-        ...
+    async def get_tag_by_slug(self, slug: str) -> Tag | None: ...
 
     async def update_tag(
         self,
         slug: str,
         new_name: str | None = None,
         new_description: str | None = None,
-    ) -> "Tag | None":
-        ...
+    ) -> Tag | None: ...
 
-    async def delete_tag(self, slug: str) -> bool:
-        ...
+    async def delete_tag(self, slug: str) -> bool: ...
 
-    async def merge_tags(self, source_slug: str, target_slug: str) -> dict:
-        ...
+    async def merge_tags(self, source_slug: str, target_slug: str) -> dict: ...
 
     # ── Bookmarks ──────────────────────────────────────────────────
 
@@ -141,51 +134,40 @@ class BookmarkBackend(Protocol):
         description: str | None = None,
         image_url: str | None = None,
         site_name: str | None = None,
-    ) -> "Bookmark":
-        ...
+    ) -> Bookmark: ...
 
-    async def get_bookmark_by_id(self, bookmark_id: int | str) -> "Bookmark | None":
-        ...
+    async def get_bookmark_by_id(self, bookmark_id: int | str) -> Bookmark | None: ...
 
     async def set_bookmark_content(
         self, bookmark_id: int | str, content: str, word_count: int
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    async def set_bookmark_summary(self, bookmark_id: int | str, summary: str) -> None:
-        ...
+    async def set_bookmark_summary(self, bookmark_id: int | str, summary: str) -> None: ...
 
     async def tag_bookmark(
         self, bookmark_id: int | str, tag_slugs: list[str]
-    ) -> "Bookmark | None":
-        ...
+    ) -> Bookmark | None: ...
 
     async def untag_bookmark(
         self, bookmark_id: int | str, tag_slugs: list[str]
-    ) -> "Bookmark | None":
-        ...
+    ) -> Bookmark | None: ...
 
     async def search_bookmarks(
         self,
         query: str | None = None,
         tag: str | None = None,
         limit: int = 50,
-    ) -> list["Bookmark"]:
-        ...
+    ) -> list[Bookmark]: ...
 
-    async def delete_bookmark(self, bookmark_id: int | str) -> bool:
-        ...
+    async def delete_bookmark(self, bookmark_id: int | str) -> bool: ...
 
     # ── Aggregate / export ─────────────────────────────────────────
 
-    async def get_stats(self) -> dict:
-        ...
+    async def get_stats(self) -> dict: ...
 
-    async def get_all_bookmarks(self) -> list["Bookmark"]:
-        ...
+    async def get_all_bookmarks(self) -> list[Bookmark]: ...
 
-    async def get_full_export(self) -> dict:
-        ...
+    async def get_full_export(self) -> dict: ...
 
 
 # ── Convenience: declared capabilities for the two known backends ──────
@@ -240,9 +222,7 @@ class UnsupportedCapability(Exception):
         self.backend = backend
         self.method = method
         suffix = f" (call: {method!r})" if method else ""
-        super().__init__(
-            f"Backend {backend!r} does not support capability {capability!r}" + suffix
-        )
+        super().__init__(f"Backend {backend!r} does not support capability {capability!r}" + suffix)
 
     def to_envelope(self) -> dict:
         """Wire shape for transport layers.
@@ -255,9 +235,7 @@ class UnsupportedCapability(Exception):
         """
         return {
             "code": "unsupported",
-            "message": (
-                f"Backend {self.backend!r} does not support {self.capability!r}"
-            ),
+            "message": (f"Backend {self.backend!r} does not support {self.capability!r}"),
             "details": {
                 "backend": self.backend,
                 "capability": self.capability,
@@ -267,7 +245,7 @@ class UnsupportedCapability(Exception):
 
 
 def require_capability(
-    backend: "BookmarkBackend",
+    backend: BookmarkBackend,
     capability: str,
     *,
     method: str | None = None,
@@ -304,7 +282,7 @@ def require_capability(
         )
 
 
-def _backend_name(backend: "BookmarkBackend") -> str:
+def _backend_name(backend: BookmarkBackend) -> str:
     """Map a backend instance to the short identifier used in error envelopes."""
     cls = type(backend).__name__
     if cls == "Database":
@@ -314,7 +292,7 @@ def _backend_name(backend: "BookmarkBackend") -> str:
     return cls.lower()
 
 
-def backend_capabilities_payload(backend: "BookmarkBackend") -> dict:
+def backend_capabilities_payload(backend: BookmarkBackend) -> dict:
     """Wire shape for ``GET /api/capabilities`` and the MCP equivalent.
 
     Returns ``{"backend": "<name>", "capabilities": {<flag>: <bool>, ...}}``.
@@ -327,17 +305,16 @@ def backend_capabilities_payload(backend: "BookmarkBackend") -> dict:
     return {
         "backend": _backend_name(backend),
         "capabilities": {
-            field.name: getattr(caps, field.name)
-            for field in dataclasses.fields(caps)
+            field.name: getattr(caps, field.name) for field in dataclasses.fields(caps)
         },
     }
 
 
 __all__ = [
-    "BackendCapabilities",
-    "BookmarkBackend",
     "DYNAMODB_CAPABILITIES",
     "SQLITE_CAPABILITIES",
+    "BackendCapabilities",
+    "BookmarkBackend",
     "UnsupportedCapability",
     "backend_capabilities_payload",
     "require_capability",

@@ -12,6 +12,38 @@ on:
         default: false
 
 jobs:
+  lint:
+    name: Lint + format (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - name: Install Ruff
+        run: uv tool install ruff
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - name: Sync dev deps (needed for stub-less stdlib + project imports)
+        run: uv sync --extra dev
+      - name: Install mypy
+        run: uv tool install mypy
+      - name: mypy src/mcp_bookmarks
+        # Pragmatic config (not strict) — see [tool.mypy] in pyproject.toml.
+        # Tightening per-module is a follow-up.
+        run: uv run mypy src/mcp_bookmarks
+
   python:
     name: Python (unit + integration)
     runs-on: ubuntu-latest

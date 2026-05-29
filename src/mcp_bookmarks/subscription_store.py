@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from .db import Database, DEFAULT_DB_PATH
+from .db import DEFAULT_DB_PATH, Database
 
 
 def _subs_table() -> str | None:
@@ -56,7 +56,9 @@ async def _upsert_dynamo(
         return
 
     def _put():
-        r = boto3.resource("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+        r = boto3.resource(
+            "dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
         r.Table(table).put_item(
             Item={
                 "customerId": customer_id,
@@ -64,7 +66,7 @@ async def _upsert_dynamo(
                 "planSku": plan_sku or "",
                 "currentPeriodEnd": current_period_end or "",
                 "rawJson": raw_json,
-                "updatedAt": datetime.now(timezone.utc).isoformat(),
+                "updatedAt": datetime.now(UTC).isoformat(),
             }
         )
 
@@ -72,13 +74,12 @@ async def _upsert_dynamo(
     await loop.run_in_executor(None, partial(_put))
 
 
-def extract_subscription_fields(obj: dict[str, Any]) -> tuple[str | None, str | None, str | None, str | None]:
+def extract_subscription_fields(
+    obj: dict[str, Any],
+) -> tuple[str | None, str | None, str | None, str | None]:
     """Return (customer_id, status, plan_sku, current_period_end) from Stripe objects."""
     customer = obj.get("customer")
-    if isinstance(customer, dict):
-        customer_id = customer.get("id")
-    else:
-        customer_id = customer
+    customer_id = customer.get("id") if isinstance(customer, dict) else customer
     status = obj.get("status")
     plan_sku = None
     items = obj.get("items", {})

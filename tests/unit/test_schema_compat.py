@@ -16,14 +16,12 @@ clients read snake_case (``description``, ``image_url``, ``site_name``,
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mcp_bookmarks.dynamodb import _to_bookmark
 from mcp_bookmarks.models import Bookmark
-
 
 # ── Bookmark model: dual-name fluency ───────────────────────────────
 
@@ -279,8 +277,19 @@ def test_search_serializer_emits_camelcase_per_item():
     item.setdefault("id", b.dynamo_id or b.id)
     item["has_content"] = b.content is not None
     # External feed adapters expect all of these:
-    for k in ("id", "url", "title", "ogImage", "ogDescription", "aiSummary",
-              "aiTags", "aiWordCount", "bookmarkType", "savedAt", "source"):
+    for k in (
+        "id",
+        "url",
+        "title",
+        "ogImage",
+        "ogDescription",
+        "aiSummary",
+        "aiTags",
+        "aiWordCount",
+        "bookmarkType",
+        "savedAt",
+        "source",
+    ):
         assert k in item, f"missing {k}"
     assert item["aiTags"] == ["python"]
     assert item["aiWordCount"] == 42

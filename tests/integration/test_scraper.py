@@ -14,7 +14,6 @@ import pytest
 
 from mcp_bookmarks.scraper import extract_article_content, extract_og_metadata
 
-
 pytestmark = pytest.mark.asyncio
 
 

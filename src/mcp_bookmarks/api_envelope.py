@@ -30,16 +30,16 @@ class ErrorCode(StrEnum):
     REST contract).
     """
 
-    UNAUTHORIZED = "unauthorized"            # 401: missing / bad credentials
-    FORBIDDEN = "forbidden"                  # 403: authenticated but not allowed
-    NOT_FOUND = "not_found"                  # 404: resource missing
-    INVALID_REQUEST = "invalid_request"      # 400: shape OK but content invalid
-    INVALID_JSON = "invalid_json"            # 400: body could not be parsed as JSON
-    VALIDATION_ERROR = "validation_error"    # 422: Pydantic / schema rejected the body
-    CONFLICT = "conflict"                    # 409: idempotency / duplicate-key style
-    RATE_LIMITED = "rate_limited"            # 429: monthly quota exceeded
+    UNAUTHORIZED = "unauthorized"  # 401: missing / bad credentials
+    FORBIDDEN = "forbidden"  # 403: authenticated but not allowed
+    NOT_FOUND = "not_found"  # 404: resource missing
+    INVALID_REQUEST = "invalid_request"  # 400: shape OK but content invalid
+    INVALID_JSON = "invalid_json"  # 400: body could not be parsed as JSON
+    VALIDATION_ERROR = "validation_error"  # 422: Pydantic / schema rejected the body
+    CONFLICT = "conflict"  # 409: idempotency / duplicate-key style
+    RATE_LIMITED = "rate_limited"  # 429: monthly quota exceeded
     INVALID_SIGNATURE = "invalid_signature"  # 400 for /webhooks/stripe
-    INTERNAL_ERROR = "internal_error"        # 500: unexpected failure
+    INTERNAL_ERROR = "internal_error"  # 500: unexpected failure
     SERVICE_UNAVAILABLE = "service_unavailable"  # 503: dependency unwired / down
 
 

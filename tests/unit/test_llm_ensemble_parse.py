@@ -4,9 +4,7 @@ from mcp_bookmarks.llm_ensemble import _parse_judge_json, gateway_status_public
 
 
 def test_parse_judge_plain_json():
-    d = _parse_judge_json(
-        '{"chosen_index": 1, "rationale": "clearer", "answer": "Final text"}'
-    )
+    d = _parse_judge_json('{"chosen_index": 1, "rationale": "clearer", "answer": "Final text"}')
     assert d["chosen_index"] == 1
     assert d["answer"] == "Final text"
 

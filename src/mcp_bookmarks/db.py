@@ -1,9 +1,10 @@
 """Async SQLite database layer for bookmarks and tags."""
 
 import json
-import aiosqlite
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
+
+import aiosqlite
 
 from .backend import SQLITE_CAPABILITIES
 from .models import Bookmark, Tag
@@ -138,9 +139,7 @@ class Database:
         await self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_bookmarks_tenant ON bookmarks(tenant_id)"
         )
-        await self.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tags_tenant ON tags(tenant_id)"
-        )
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_tags_tenant ON tags(tenant_id)")
 
     async def close(self) -> None:
         if self._db:
@@ -256,7 +255,7 @@ class Database:
         site_name: str | None = None,
     ) -> Bookmark:
         """Insert or update a bookmark by URL within this tenant."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         cursor = await self.db.execute(
             """INSERT INTO bookmarks (url, tenant_id, title, description, image_url, site_name, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -295,7 +294,7 @@ class Database:
             return
         await self.db.execute(
             "UPDATE bookmarks SET content = ?, word_count = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
-            (content, word_count, datetime.now(timezone.utc).isoformat(), bid, self.tenant_id),
+            (content, word_count, datetime.now(UTC).isoformat(), bid, self.tenant_id),
         )
         await self.db.commit()
 
@@ -322,9 +321,7 @@ class Database:
             )
         await self.db.commit()
 
-        cursor = await self.db.execute(
-            "SELECT * FROM bookmarks WHERE id = ?", (bid,)
-        )
+        cursor = await self.db.execute("SELECT * FROM bookmarks WHERE id = ?", (bid,))
         r = await cursor.fetchone()
         return await self._row_to_bookmark(r)
 
@@ -335,7 +332,7 @@ class Database:
             return
         await self.db.execute(
             "UPDATE bookmarks SET summary = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
-            (summary, datetime.now(timezone.utc).isoformat(), bid, self.tenant_id),
+            (summary, datetime.now(UTC).isoformat(), bid, self.tenant_id),
         )
         await self.db.commit()
 
@@ -403,12 +400,8 @@ class Database:
         )
         tag_ids = [r["tag_id"] for r in await tag_cursor.fetchall()]
 
-        await self.db.execute(
-            "DELETE FROM bookmark_tags WHERE bookmark_id = ?", (bid,)
-        )
-        await self.db.execute(
-            "DELETE FROM bookmarks WHERE id = ?", (bid,)
-        )
+        await self.db.execute("DELETE FROM bookmark_tags WHERE bookmark_id = ?", (bid,))
+        await self.db.execute("DELETE FROM bookmarks WHERE id = ?", (bid,))
 
         # Recalculate usage counts for affected tags
         for tag_id in tag_ids:
@@ -458,9 +451,7 @@ class Database:
         if not tag or not tag.id:
             return False
 
-        await self.db.execute(
-            "DELETE FROM bookmark_tags WHERE tag_id = ?", (tag.id,)
-        )
+        await self.db.execute("DELETE FROM bookmark_tags WHERE tag_id = ?", (tag.id,))
         await self.db.execute(
             "DELETE FROM tags WHERE id = ? AND tenant_id = ?", (tag.id, self.tenant_id)
         )
@@ -497,9 +488,7 @@ class Database:
             reassigned += 1
 
         # Remove source tag associations and delete it
-        await self.db.execute(
-            "DELETE FROM bookmark_tags WHERE tag_id = ?", (source.id,)
-        )
+        await self.db.execute("DELETE FROM bookmark_tags WHERE tag_id = ?", (source.id,))
         await self.db.execute("DELETE FROM tags WHERE id = ?", (source.id,))
 
         # Recalculate target usage count
@@ -561,7 +550,7 @@ class Database:
 
         return {
             "version": "1.0",
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "stats": stats,
             "tags": [t.model_dump(mode="json") for t in tags],
             "bookmarks": [
@@ -594,7 +583,7 @@ class Database:
         await self.db.commit()
 
     async def count_usage_events_month(self, tenant_id: str = "default") -> int:
-        prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+        prefix = datetime.now(UTC).strftime("%Y-%m")
         cursor = await self.db.execute(
             "SELECT COUNT(*) as c FROM usage_events WHERE tenant_id = ? AND created_at LIKE ?",
             (tenant_id, f"{prefix}%"),
@@ -610,7 +599,7 @@ class Database:
         current_period_end: str | None,
         raw_json: str,
     ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await self.db.execute(
             """INSERT INTO subscription_state (customer_id, status, plan_sku, current_period_end, raw_json, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)
@@ -634,7 +623,7 @@ class Database:
     async def upsert_bookmark_embedding(
         self, bookmark_id: int, model: str, vector: list[float]
     ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await self.db.execute(
             """INSERT INTO bookmark_embeddings (bookmark_id, model, vector_json, updated_at)
                VALUES (?, ?, ?, ?)

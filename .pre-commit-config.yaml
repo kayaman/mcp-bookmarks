@@ -1,0 +1,38 @@
+# Run on changed files only — fast enough to keep in the path of every commit.
+# Install once: `make pre-commit-install`.
+#
+# The CI gates in .github/workflows/ci.yml are the source of truth; these
+# hooks just give you the same signal at commit time.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Pin to the same Ruff version operators install via `make install`.
+    rev: v0.15.15
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Optional but recommended: catch the obvious end-of-file / trailing-whitespace
+  # noise that human reviewers would otherwise spend cycles on.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+
+  # mypy on changed files only — the full src/ sweep stays in CI to keep
+  # commits fast (mypy on the whole codebase adds 4-5s; on a 5-file commit,
+  # under a second).
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.18.2
+    hooks:
+      - id: mypy
+        files: ^src/mcp_bookmarks/.*\.py$
+        # Hand mypy the package as a single import root so it sees siblings.
+        args: [--config-file=pyproject.toml]
+        additional_dependencies:
+          - pydantic>=2.0.0
