@@ -43,6 +43,11 @@ from .api_requests import (
     parse_request_body,
 )
 from .auth import api_keys_configured, require_api_key
+from .backend import (
+    UnsupportedCapability,
+    backend_capabilities_payload,
+    require_capability,
+)
 from .db import Database, DEFAULT_DB_PATH
 from .scraper import extract_og_metadata, extract_article_content
 from .stripe_util import verify_stripe_signature
@@ -378,10 +383,25 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
 
 
 async def api_usage(request: Request) -> JSONResponse:
-    """GET /usage — Monthly tool/event count for the authenticated tenant."""
+    """GET /usage — Monthly tool/event count for the authenticated tenant.
+
+    Requires the active backend to support native ``usage_metering``. DynamoDB
+    mode delegates to ``DYNAMODB_USAGE_TABLE`` (counted via ``usage_meter`` at
+    write time) but cannot read aggregate counts back through the protocol, so
+    we return a structured ``unsupported`` envelope in that case.
+    """
     tenant = _effective_tenant(request)
     db = await _db(request)
     try:
+        try:
+            require_capability(db, "usage_metering", method="count_usage_events_month")
+        except UnsupportedCapability as exc:
+            return error_response(
+                ErrorCode.FORBIDDEN,
+                str(exc),
+                status=403,
+                details=exc.to_envelope()["details"],
+            )
         n = await db.count_usage_events_month(tenant)
     finally:
         await db.close()
@@ -394,6 +414,30 @@ async def api_usage(request: Request) -> JSONResponse:
             "limit_enforced": monthly_limit_enabled(),
         }
     )
+
+
+async def api_capabilities(request: Request) -> JSONResponse:
+    """GET /capabilities — Report the active backend's capability flags.
+
+    Clients use this to branch ahead of calling a capability-gated endpoint
+    instead of round-tripping for a 403. The response shape is::
+
+        {
+          "backend": "sqlite" | "dynamodb",
+          "capabilities": {
+            "semantic_search": bool,
+            "paged_search": bool,
+            "integer_bookmark_ids": bool,
+            "usage_metering": bool,
+            "subscription_storage": bool
+          }
+        }
+    """
+    db = await _db(request)
+    try:
+        return JSONResponse(backend_capabilities_payload(db))
+    finally:
+        await db.close()
 
 
 async def api_ensemble(request: Request) -> JSONResponse:
@@ -947,6 +991,7 @@ def create_api_app() -> Starlette:
             Route("/tag", api_create_tag_rest, methods=["POST"]),
             Route("/tags", api_tags, methods=["GET"]),
             Route("/usage", api_usage, methods=["GET"]),
+            Route("/capabilities", api_capabilities, methods=["GET"]),
             Route("/ai-gateway/status", api_ai_gateway_status, methods=["GET"]),
             Route("/ensemble", api_ensemble, methods=["POST"]),
         ],

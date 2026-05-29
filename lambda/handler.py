@@ -1,6 +1,28 @@
 """
 Lambda handler — processes new links from DynamoDB Streams with a Claude AI agent.
 
+⚠️ SAMPLE / TEMPLATE — NOT WIRED INTO THE MAIN APP CONTRACT
+
+This Lambda intentionally uses a **simpler snake_case schema**
+(``title``, ``description``, ``content``, ``summary``, ``tags``,
+``image_url``, ``site_name``, ``word_count``) for its UpdateItem calls.
+
+The main app's canonical wire shape is **camelCase** (``ogTitle``,
+``ogDescription``, ``ogImage``, ``ogSiteName``, ``aiSummary``, ``aiTags``,
+``aiContent``, ``aiWordCount``, ``aiStatus``) — see
+``src/mcp_bookmarks/models.py``::Bookmark and ``src/mcp_bookmarks/dynamodb.py``::_to_bookmark.
+
+If you wire this Lambda into a deployment that's also read by the main
+mcp-bookmarks server, either:
+
+  (a) Fork this file and rewrite the UpdateExpression to emit the
+      canonical camelCase keys (``ogTitle``, ``aiContent``, ...).
+  (b) Treat the items it writes as a separate, non-mcp-bookmarks corpus
+      that won't surface cleanly through ``read_bookmark`` / ``search_bookmarks``.
+
+Tracked on WDN-394 / OSS-4. The divergence is deliberate — this file
+ships as a copy-and-modify template, not a production-ready integration.
+
 Flow:
   1. A new item {id, url, status: "PENDING"} is inserted into the links table
   2. DynamoDB Streams triggers this Lambda on INSERT

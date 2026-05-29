@@ -178,6 +178,40 @@ Tags are scoped to the authenticated tenant.
 }
 ```
 
+Failures: `forbidden` with `details: {backend, capability: "usage_metering",
+method: "count_usage_events_month"}` when the active backend can't read
+aggregate usage counts (today: DynamoDB mode — it writes events but the
+read path is not yet wired through the protocol).
+
+### `GET /api/capabilities` — active-backend capability flags
+
+```json
+{
+  "backend": "sqlite",
+  "capabilities": {
+    "semantic_search": true,
+    "paged_search": false,
+    "integer_bookmark_ids": true,
+    "usage_metering": true,
+    "subscription_storage": true
+  }
+}
+```
+
+Clients use this to branch ahead of calling a capability-gated endpoint
+rather than round-tripping for a 403. The `backend` field is `"sqlite"`
+or `"dynamodb"`; the `capabilities` keys are stable (changing one is a
+breaking-contract change) but new keys can be added over time as flags
+are introduced.
+
+| Capability | When `false`, these calls return `forbidden` |
+|---|---|
+| `semantic_search` | MCP tools `index_bookmark_embedding`, `semantic_search_bookmarks` |
+| `paged_search` | MCP tool `search_bookmarks_paged` (gated on the backend; SQLite returns a single page) |
+| `usage_metering` | REST `GET /api/usage` |
+| `integer_bookmark_ids` | Informational only — clients should accept both `int` and `str` IDs |
+| `subscription_storage` | Informational only — Stripe webhook writes still go through `subscription_store` |
+
 ### `POST /api/ensemble` — multi-model + LLM judge (experimental)
 
 Requires `ENSEMBLE_ENABLED=true`. **Body:**
