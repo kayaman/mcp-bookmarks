@@ -1,4 +1,10 @@
+# First-time deploy? Follow docs/go-live.md (one-page walkthrough).
+#
 # Copy to terraform.tfvars (do not commit secrets).
+# Secrets stay in TF_VAR_* env vars; only non-sensitive config lives here.
+# Required keys with no default: budget_alert_email; also
+# mcp_hostname + route53_zone_id when enable_alb = true.
+#
 # aws configure --profile your-account
 # export AWS_PROFILE=your-account
 
