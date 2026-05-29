@@ -15,14 +15,14 @@ jobs:
           version: "latest"
       - name: Sync and test
         run: |
-          uv sync --extra dev --extra crew
+          uv sync --extra dev
           uv run python -m pytest tests/ -q --ignore=tests/test_api.py --ignore=tests/test_e2e_sse.py
 
-  rust-fetch:
+  rust-topic-compiler:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rust/blogmarks-fetch
+        working-directory: rust/topic-compiler
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -9,7 +9,7 @@ pub async fn load(only_tag: Option<&str>) -> Result<Vec<Bookmark>> {
     let client = Client::new(&config);
 
     let table =
-        std::env::var("DYNAMODB_LINKS_TABLE").unwrap_or_else(|_| "blogmarks-links".into());
+        std::env::var("DYNAMODB_LINKS_TABLE").unwrap_or_else(|_| "mcp-bookmarks-links".into());
 
     // Scan is fine at this scale; switch to Query on feed-savedAt GSI later.
     let mut out = Vec::new();

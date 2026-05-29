@@ -1,10 +1,9 @@
 """DynamoDB backend for mcp-bookmarks.
 
-Connects mcp-bookmarks to the same blogmarks-links / blogmarks-tags tables
-used by the blogmarks PWA. Activate with DYNAMODB_MODE=true and set:
+Activate with DYNAMODB_MODE=true and set:
 
-  DYNAMODB_LINKS_TABLE   (default: blogmarks-links)
-  DYNAMODB_TAGS_TABLE    (default: blogmarks-tags)
+  DYNAMODB_LINKS_TABLE   (default: mcp-bookmarks-links)
+  DYNAMODB_TAGS_TABLE    (default: mcp-bookmarks-tags)
   DYNAMODB_USER_ID       (default: mcp-agent)  — userId tagged on saved bookmarks
   AWS_DEFAULT_REGION     (default: us-east-1)
 """
@@ -24,8 +23,8 @@ from .models import Bookmark, Tag
 if TYPE_CHECKING:
     from .models import Tenant
 
-_LINKS_TABLE = os.environ.get("DYNAMODB_LINKS_TABLE", "blogmarks-links")
-_TAGS_TABLE = os.environ.get("DYNAMODB_TAGS_TABLE", "blogmarks-tags")
+_LINKS_TABLE = os.environ.get("DYNAMODB_LINKS_TABLE", "mcp-bookmarks-links")
+_TAGS_TABLE = os.environ.get("DYNAMODB_TAGS_TABLE", "mcp-bookmarks-tags")
 _ORG_LEGACY = os.environ.get("DYNAMODB_ORG_INCLUDE_LEGACY", "").lower() in ("1", "true", "yes")
 
 
@@ -52,12 +51,9 @@ def _to_tag(item: dict) -> Tag:
 def _to_bookmark(item: dict) -> Bookmark:
     """Map a DDB item to a ``Bookmark``.
 
-    DDB items written by the blogmarks Lambda use camelCase
-    (``ogTitle``, ``ogDescription``, ``ogImage``, ``ogSiteName``).
-    Items written by mcp-bookmarks before v0.10.0 use snake_case
-    (``description``, ``image_url``, ``site_name``). This reads
-    camelCase preferentially with a snake_case fallback so both shapes
-    surface correctly.
+    Reads camelCase (``ogTitle``, ``ogDescription``, ``ogImage``, ``ogSiteName``)
+    preferentially with a snake_case fallback (``description``, ``image_url``,
+    ``site_name``) so both shapes surface correctly.
     """
     og_title = item.get("ogTitle")
     og_description = item.get("ogDescription")
@@ -85,7 +81,7 @@ def _to_bookmark(item: dict) -> Bookmark:
         tags=ai_tags_list,
         created_at=item.get("savedAt"),
         updated_at=item.get("aiProcessedAt") or item.get("savedAt"),
-        # camelCase (what the Blogmarks PWA reads):
+        # camelCase aliases (for camelCase consumers):
         og_title=og_title,
         og_description=og_description,
         og_image=og_image,
@@ -102,7 +98,7 @@ def _to_bookmark(item: dict) -> Bookmark:
         original_url=item.get("originalUrl"),
         saved_at=item.get("savedAt"),
         source=item.get("source"),
-        # ownership + share metadata (PWA detail page)
+        # ownership + share metadata
         notes=item.get("notes"),
         mcp_exposed=item.get("mcpExposed"),
         visibility=item.get("visibility"),
@@ -144,7 +140,7 @@ class DynamoDBDatabase:
 
     def _user_id(self) -> str:
         # Per-request identity (set by BearerAuthMiddleware on authenticated
-        # PWA / scoped-token traffic) takes precedence over the lifespan-level
+        # JWT or scoped-token traffic) takes precedence over the lifespan-level
         # default. Falls back to the static env var so single-tenant stdio
         # deployments behave exactly as before.
         from .request_context import current_user_id
@@ -365,10 +361,8 @@ class DynamoDBDatabase:
     ) -> Bookmark:
         """Insert a new bookmark.
 
-        Writes the camelCase keys the blogmarks PWA reads (``ogTitle``,
-        ``ogDescription``, ``ogImage``, ``ogSiteName``) so a bookmark saved
-        through this server is indistinguishable in DDB from one saved through
-        the legacy blogmarks Lambda. The ``description``/``image_url``/
+        Writes the canonical camelCase OG keys (``ogTitle``, ``ogDescription``,
+        ``ogImage``, ``ogSiteName``). The ``description``/``image_url``/
         ``site_name`` arguments are kept for back-compat with existing callers
         (the bookmarklet, REST `/api/save`, Claude/Cursor sessions); they map
         to the OG.* fields rather than living under their snake_case names.
@@ -386,7 +380,7 @@ class DynamoDBDatabase:
                         "id": bk_id,
                         "url": url,
                         "title": title,
-                        # camelCase OG (PWA reads these directly)
+                        # camelCase OG (canonical shape for camelCase consumers)
                         "ogTitle": title,
                         "ogDescription": description,
                         "ogImage": image_url,
@@ -415,7 +409,7 @@ class DynamoDBDatabase:
             site_name=site_name,
             tags=[],
             created_at=now,
-            # camelCase fields populated so the PWA gets a complete
+            # camelCase fields populated so callers get a complete
             # SavedResponse from save_bookmark without a follow-up read.
             og_title=title,
             og_description=description,

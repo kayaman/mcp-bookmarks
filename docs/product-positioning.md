@@ -8,7 +8,7 @@
 
 ## Horizontal extension (secondary, roadmap)
 
-**RAG-style capabilities** beyond keyword search are intentionally scoped to **saved bookmarks** until a cloud vector pipeline exists for DynamoDB/blogmarks. A separate **HTTP retrieve/query API** (e.g. `POST /v1/rag/query`) may be added later using the same auth and usage patterns as [`auth.py`](../src/mcp_bookmarks/auth.py) and [`usage_meter.py`](../src/mcp_bookmarks/usage_meter.py); it is **not** implemented yet.
+**RAG-style capabilities** beyond keyword search are intentionally scoped to **saved bookmarks** until a cloud vector pipeline exists for the DynamoDB backend. A separate **HTTP retrieve/query API** (e.g. `POST /v1/rag/query`) may be added later using the same auth and usage patterns as [`auth.py`](../src/mcp_bookmarks/auth.py) and [`usage_meter.py`](../src/mcp_bookmarks/usage_meter.py); it is **not** implemented yet.
 
 ## What this excludes (for now)
 

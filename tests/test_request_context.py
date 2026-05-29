@@ -141,7 +141,7 @@ async def test_middleware_cognito_sets_contextvar_around_call_next(monkeypatch):
     monkeypatch.setenv("MCP_BEARER_AUTH", "true")
     monkeypatch.setenv("COGNITO_USER_POOL_ID", "us-east-1_TEST")
     monkeypatch.setenv("COGNITO_CLIENT_ID", "test-client")
-    monkeypatch.setenv("DYNAMODB_ORG_ID", "blogmarks")
+    monkeypatch.setenv("DYNAMODB_ORG_ID", "test-org")
 
     from mcp_bookmarks.bearer_auth import BearerAuthMiddleware
 
@@ -173,7 +173,7 @@ async def test_middleware_cognito_sets_contextvar_around_call_next(monkeypatch):
 
     assert resp.status_code == 200
     assert seen["uid_inside"] == "cognito-abc"
-    assert seen["tid_inside"] == "blogmarks"
+    assert seen["tid_inside"] == "test-org"
     # Outside the request, contextvar is back to default.
     assert current_user_id() is None
     assert current_tenant_id() is None
@@ -201,7 +201,7 @@ async def test_middleware_scoped_token_sets_contextvar(monkeypatch):
     request.state = MagicMock()
 
     middleware = BearerAuthMiddleware(app=lambda *a, **kw: None)
-    fake_row = {"id": "conn-1", "userId": "user-456", "organizationId": "blogmarks-team"}
+    fake_row = {"id": "conn-1", "userId": "user-456", "organizationId": "acme-team"}
     with patch(
         "mcp_bookmarks.bearer_auth._CognitoVerifier.verify",
         return_value=None,
@@ -214,7 +214,7 @@ async def test_middleware_scoped_token_sets_contextvar(monkeypatch):
 
     assert resp.status_code == 200
     assert seen["uid_inside"] == "user-456"
-    assert seen["tid_inside"] == "blogmarks-team"
+    assert seen["tid_inside"] == "acme-team"
     assert current_user_id() is None
 
 

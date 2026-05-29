@@ -22,7 +22,7 @@ struct Cli {
 enum Cmd {
     /// Compile topics from the current bookmark corpus.
     Compile {
-        /// Source backend: "sqlite" (local mcp-bookmarks) or "dynamodb" (live blogmarks)
+        /// Source backend: "sqlite" (local mcp-bookmarks) or "dynamodb" (live corpus)
         #[arg(long, default_value = "sqlite")]
         source: String,
         /// Output directory (Astro content collection path)

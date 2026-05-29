@@ -47,7 +47,7 @@ class ArticleContent(BaseModel):
 class Bookmark(BaseModel):
     """A saved bookmark with its metadata and tags.
 
-    The Blogmarks PWA reads camelCase fields (``ogTitle``, ``ogDescription``,
+    The canonical wire shape is camelCase (``ogTitle``, ``ogDescription``,
     ``ogImage``, ``ogSiteName``, ``aiSummary``, ``aiTags``, ``aiContent``,
     ``aiWordCount``, ``bookmarkType``, ``savedAt``, ...). The legacy snake_case
     fields (``description``, ``image_url``, ``site_name``, ``summary``,
@@ -81,7 +81,7 @@ class Bookmark(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
-    # ── camelCase fields (what the Blogmarks PWA reads) ─────────────────
+    # ── camelCase aliases (canonical wire shape) ────────────────────────
     og_title: str | None = Field(default=None, alias="ogTitle")
     og_description: str | None = Field(default=None, alias="ogDescription")
     og_image: str | None = Field(default=None, alias="ogImage")
@@ -101,7 +101,7 @@ class Bookmark(BaseModel):
     saved_at: str | None = Field(default=None, alias="savedAt")
     source: str | None = None
 
-    # ── ownership / share metadata (Blogmarks PWA detail page) ──────────
+    # ── ownership / share metadata ──────────────────────────────────────
     notes: str | None = None
     mcp_exposed: bool | None = Field(default=None, alias="mcpExposed")
     visibility: str | None = None

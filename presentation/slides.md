@@ -2,7 +2,7 @@
 theme: default
 title: mcp-bookmarks
 info: |
-  Bookmark-native knowledge for AI agents — MCP server + optional Blogmarks sync
+  Bookmark-native knowledge for AI agents — MCP server (SQLite or DynamoDB)
 class: text-center
 drawings:
   persist: false
@@ -49,7 +49,7 @@ Optional: **`set_bookmark_body`** when another tool (Bright Data, Tavily, …) a
 
 - **Developers** using **Claude Code**, **Cursor**, **ChatGPT**, or any MCP client
 - Teams that want **one** curated link store **inside** agent workflows
-- Users of **[blogmarks.dev](https://blogmarks.dev)** who want the **same data** from the assistant (`DYNAMODB_MODE=true`)
+- Anyone running a first-party app (browser/mobile/PWA) who wants the **same data** from the assistant via `DYNAMODB_MODE=true`
 
 ---
 
@@ -68,7 +68,7 @@ flowchart TB
   end
   subgraph storage [Storage]
     L[(SQLite_default)]
-    D[(DynamoDB_blogmarks)]
+    D[(DynamoDB)]
   end
   CC -->|SSE| SSE
   CUR -->|SSE| SSE
@@ -79,13 +79,13 @@ flowchart TB
   SH --> D
 ```
 
-Same 19 tools across **both transports**; **SQLite** for local-only, **DynamoDB** for live Blogmarks tables.
+Same 19 tools across **both transports**; **SQLite** for local-only, **DynamoDB** for cloud deployments.
 
 ---
 
 # Live on production
 
-**`https://mcp.blogmarks.dev`**
+**`https://<your-mcp-host>`**
 
 ```mermaid
 flowchart LR
@@ -122,18 +122,18 @@ Same steps across all three clients — compare UX, not behavior:
 | 2 | Resource `bookmarks://taxonomy` | Tag list with descriptions |
 | 3 | Prompt `save_and_tag(url)` | Full pipeline: extract → tag → summarize |
 | 4 | `search_bookmarks(query="agents")` | New item appears in results |
-| 5 | Open blogmarks.dev | Same item in the PWA → shared tables |
+| 5 | `read_bookmark(<id>)` or AWS console | Item shape matches DDB write |
 
 ---
 
 # Client 1 — Claude Code
 
 ```bash
-export BLOGMARKS_MCP_KEY="<demo-token>"
+export MCP_API_KEY="<demo-token>"
 
-claude mcp add --transport sse blogmarks \
-  https://mcp.blogmarks.dev/sse \
-  --header "Authorization: Bearer $BLOGMARKS_MCP_KEY"
+claude mcp add --transport sse bookmarks \
+  https://<your-mcp-host>/sse \
+  --header "Authorization: Bearer $MCP_API_KEY"
 ```
 
 Transport: **SSE** (`/sse`)  
@@ -141,8 +141,8 @@ Transport: **SSE** (`/sse`)
 
 ```bash
 # Smoke check
-curl -s https://mcp.blogmarks.dev/api/stats \
-  -H "Authorization: Bearer $BLOGMARKS_MCP_KEY"
+curl -s https://<your-mcp-host>/api/stats \
+  -H "Authorization: Bearer $MCP_API_KEY"
 # → {"total_bookmarks": N, "total_tags": M}
 ```
 
@@ -155,11 +155,11 @@ curl -s https://mcp.blogmarks.dev/api/stats \
 ```json
 {
   "mcpServers": {
-    "blogmarks": {
+    "bookmarks": {
       "type": "sse",
-      "url": "https://mcp.blogmarks.dev/sse",
+      "url": "https://<your-mcp-host>/sse",
       "headers": {
-        "Authorization": "Bearer ${env:BLOGMARKS_MCP_KEY}"
+        "Authorization": "Bearer ${env:MCP_API_KEY}"
       }
     }
   }
@@ -167,7 +167,7 @@ curl -s https://mcp.blogmarks.dev/api/stats \
 ```
 
 `Cmd+Shift+P` → **MCP: Reload Servers** → confirm 19 tools  
-`${env:BLOGMARKS_MCP_KEY}` keeps the token out of committed files
+`${env:MCP_API_KEY}` keeps the token out of committed files
 
 ---
 
@@ -177,7 +177,7 @@ curl -s https://mcp.blogmarks.dev/api/stats \
 
 | Field | Value |
 |-------|-------|
-| URL | `https://mcp.blogmarks.dev/mcp` |
+| URL | `https://<your-mcp-host>/mcp` |
 | Auth | Bearer token → `<demo-token>` |
 
 Transport: **Streamable HTTP** (`/mcp`)  
@@ -199,9 +199,9 @@ ChatGPT cannot use `/sse` — you must use `/mcp`
 
 ---
 
-# Cloud mode — Blogmarks
+# Cloud mode — DynamoDB
 
-- **`DYNAMODB_MODE=true`** — same item shape as the PWA: `aiContent`, `aiSummary`, `aiTags`, …
+- **`DYNAMODB_MODE=true`** — canonical camelCase item shape: `aiContent`, `aiSummary`, `aiTags`, …
 - **Semantic search in the cloud** is specified in the repo design doc — **chunking + vector store** (e.g. pgvector / OpenSearch) — **not yet implemented** in code.
 
 See `docs/dynamodb-rag-design.md` in the repository.
@@ -242,7 +242,7 @@ Production checklist: `docs/production-readiness.md`.
 
 # Roadmap (high level)
 
-1. **DynamoDB / blogmarks** — chunking, embedding model versioning, **vector index** (design in `docs/dynamodb-rag-design.md`)
+1. **DynamoDB mode** — chunking, embedding model versioning, **vector index** (design in `docs/dynamodb-rag-design.md`)
 2. **Unified semantic search** across SQLite and cloud once indexing exists
 3. Optional **`POST /api/rag/search`** — citations (title, URL, snippet, score) with existing API keys
 
@@ -257,16 +257,16 @@ Product positioning: `docs/product-positioning.md`.
 ```bash
 # SSE — Claude Code, Cursor
 curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Bearer $BLOGMARKS_MCP_KEY" \
-     https://mcp.blogmarks.dev/sse
+     -H "Authorization: Bearer $MCP_API_KEY" \
+     https://<your-mcp-host>/sse
 
 # Claude Code
-claude mcp add --transport sse blogmarks \
-  https://mcp.blogmarks.dev/sse \
-  --header "Authorization: Bearer $BLOGMARKS_MCP_KEY"
+claude mcp add --transport sse bookmarks \
+  https://<your-mcp-host>/sse \
+  --header "Authorization: Bearer $MCP_API_KEY"
 ```
 
-**ChatGPT:** Settings → Connectors → `https://mcp.blogmarks.dev/mcp`
+**ChatGPT:** Settings → Connectors → `https://<your-mcp-host>/mcp`
 
 **Local dev:**
 
@@ -276,7 +276,7 @@ uv sync && uv run mcp-bookmarks
 # → http://localhost:8000/mcp  (Streamable HTTP)
 ```
 
-- **Site:** [blogmarks.dev](https://blogmarks.dev)  
+- **Repo:** `kayaman/mcp-bookmarks`
 - **Docs:** [docs/demo/](https://github.com/kayaman/mcp-bookmarks/tree/main/docs/demo)  
 
 **Thank you.** Questions welcome.

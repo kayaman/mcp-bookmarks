@@ -4,17 +4,17 @@ An MCP (Model Context Protocol) server for intelligent bookmark management. Save
 
 Supports two storage backends:
 - **SQLite** (default) — local `~/.mcp-bookmarks/bookmarks.db`
-- **DynamoDB** (`DYNAMODB_MODE=true`) — connects to the live [blogmarks](https://blogmarks.dev) AWS tables, sharing data with the PWA
+- **DynamoDB** (`DYNAMODB_MODE=true`) — connects to AWS DynamoDB tables (default names: `mcp-bookmarks-links`, `mcp-bookmarks-tags`), shareable with any compatible external store via table-name overrides
 
 ## Product direction
 
-This repo is positioned as a **hybrid** product: **bookmark-native RAG and capture** (MCP + REST) is the primary wedge; generic “upload any corpus” RAG-as-a-service is **out of scope** until an optional HTTP retrieve API is built on top of the same auth/usage stack. Semantic search is **full-featured in SQLite**; **DynamoDB mode** still uses keyword search for retrieval until a cloud vector pipeline exists.
+This repo is positioned as a **hybrid** product: **bookmark-native RAG and capture** (MCP + REST) is the primary wedge; generic "upload any corpus" RAG-as-a-service is **out of scope** until an optional HTTP retrieve API is built on top of the same auth/usage stack. Semantic search is **full-featured in SQLite**; **DynamoDB mode** still uses keyword search for retrieval until a cloud vector pipeline exists.
 
 | Document | Purpose |
 |----------|---------|
 | [`docs/product-positioning.md`](docs/product-positioning.md) | Vertical vs horizontal boundary (decision record) |
 | [`docs/production-readiness.md`](docs/production-readiness.md) | What is wired (auth, quotas, Stripe) and what to verify in production |
-| [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md) | Chunking, embedding model, vector store options for blogmarks/DynamoDB |
+| [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md) | Chunking, embedding model, vector store options for DynamoDB-backed deployments |
 
 ## Architecture
 
@@ -56,8 +56,8 @@ This repo is positioned as a **hybrid** product: **bookmark-native RAG and captu
        ┌───────┴───────┐
        ▼               ▼
   SQLite           DynamoDB
-  (default)        (blogmarks-links
-                    blogmarks-tags)
+  (default)        (mcp-bookmarks-links
+                    mcp-bookmarks-tags)
 ```
 
 ## Setup
@@ -85,7 +85,7 @@ MCP_PORT=9000 MCP_HOST=127.0.0.1 uv run mcp-bookmarks
 BOOKMARKS_DB_PATH=/path/to/bookmarks.db uv run mcp-bookmarks
 ```
 
-### DynamoDB mode (live blogmarks data)
+### DynamoDB mode
 
 ```bash
 DYNAMODB_MODE=true \
@@ -95,7 +95,7 @@ uv run mcp-bookmarks
 
 `save_bookmark` returns a **`bookmark_id`**: UUID string in DynamoDB mode, integer in SQLite. Use that id with `extract_content`, `set_bookmark_body`, `tag_bookmark`, and `set_summary`.
 
-Writes use the same field names as [blogmarks.dev](https://blogmarks.dev): `aiContent`, `aiWordCount`, `aiSummary`, `aiTags`, `aiProcessedAt`. Optional AWS Lambda (`blogmarks-ai-processor`) may still enrich items; the MCP can now persist text and tags directly without waiting for Lambda.
+Writes use the canonical camelCase schema: `aiContent`, `aiWordCount`, `aiSummary`, `aiTags`, `aiProcessedAt`. An external enrichment Lambda may still process items asynchronously; the MCP can also persist text and tags directly without waiting for one.
 
 **`set_bookmark_body(bookmark_id, text)`** — use when another MCP (e.g. Bright Data, Tavily) already returned the page text; avoids a second HTTP fetch from this server.
 
@@ -139,7 +139,7 @@ claude mcp add --transport sse bookmarks http://localhost:8000/sse
 ```json
 {
   "mcpServers": {
-    "blogmarks": {
+    "bookmarks": {
       "type": "sse",
       "url": "http://localhost:8000/sse"
     }
@@ -172,28 +172,6 @@ Integration is **three MCP servers in the client** (not bundled into this repo).
 
 See also **[`docs/mcp-fetch-integrations.md`](docs/mcp-fetch-integrations.md)** for Tavily and Bright Data JSON snippets. O’Reilly-only prompts and compliance: **[`docs/oreilly-mcp.md`](docs/oreilly-mcp.md)**.
 
-### Batch ingest (`blogmarks-crew`)
-
-With `uv run mcp-bookmarks` running, ingest many URLs from a file (one per line; `#` comments allowed):
-
-```bash
-uv run blogmarks-crew ingest --urls-file urls.txt --api-base http://127.0.0.1:8000
-# With REST API keys enabled:
-uv run blogmarks-crew ingest --urls-file urls.txt --api-key "$MCP_API_KEY"
-```
-
-Optional **CrewAI** (install extras, set LLM env vars as required by CrewAI, e.g. `OPENAI_API_KEY`):
-
-```bash
-uv sync --extra crew
-# Topic clusters from URL list only (no fetch)
-uv run blogmarks-crew agents --urls-file urls.txt
-# Save URL via REST, then librarian + editor agents tag + summarize (uses new REST tools)
-uv run blogmarks-crew enrich --url https://example.com/article --api-base http://127.0.0.1:8000
-# Topic slug ideas from one saved bookmark
-uv run blogmarks-crew suggest-topics --bookmark-id 1 --api-base http://127.0.0.1:8000
-```
-
 ### AWS (Terraform)
 
 Infrastructure-as-code for DynamoDB (links, tags, **usage events**, **subscriptions**), RDS (pgvector-ready), Lambda, ECS, optional **ALB** (`enable_alb`), budgets, and cost tags lives in [`terraform/`](terraform/). Outputs include `alb_dns_name` when the load balancer is enabled. Stripe targets `POST /webhooks/stripe` on the same host as the MCP server.
@@ -206,22 +184,13 @@ Infrastructure-as-code for DynamoDB (links, tags, **usage events**, **subscripti
 
 ### Semantic search (SQLite + OpenAI)
 
-With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_bookmark_embedding`** after **`extract_content`**, then **`semantic_search_bookmarks`**. Vectors live in the local DB table `bookmark_embeddings`. For **DynamoDB / blogmarks**, semantic index design (chunking, vector store) is specified in [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md)—not yet implemented in code.
-
-### Rust fetch CLI (optional)
-
-[`rust/blogmarks-fetch/`](rust/blogmarks-fetch/) — `cargo run --release -- https://example.com` prints JSON (`status`, `html_bytes`, optional `title` from `<title>`). Extend with readability-style extraction for batch ingest.
+With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_bookmark_embedding`** after **`extract_content`**, then **`semantic_search_bookmarks`**. Vectors live in the local DB table `bookmark_embeddings`. For **DynamoDB-backed deployments**, semantic index design (chunking, vector store) is specified in [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md)—not yet implemented in code.
 
 ### Deploying this package (per release)
 
 1. Bump `version` in [`pyproject.toml`](pyproject.toml) (semver).
 2. **MCP server** used by Cursor/Claude: rebuild/restart whatever runs `uv run mcp-bookmarks` (or your container image) so workers pick up the new code.
-3. **Optional Lambda** in [`terraform/`](terraform/): run `terraform/scripts/package-lambda.sh`, then `terraform apply` if you manage the processor with this repo (note: the sample Lambda uses a different item schema than production blogmarks unless you align attribute names).
-4. **blogmarks.dev PWA/API** live in their own repo/deploy pipeline; this repository mainly ships the MCP + optional Terraform.
-
-### Roadmap: PWA (Android Share Target)
-
-The Blogmarks **PWA** (separate front-end repo / deployment) can use the [Web Share Target API](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/How_to/Share_data_between_apps) to receive URLs from Android share sheets and call the authenticated ingest API.
+3. **Optional Lambda** in [`terraform/`](terraform/): run `terraform/scripts/package-lambda.sh`, then `terraform apply` if you manage the processor with this repo.
 
 ## Tools
 
@@ -292,8 +261,8 @@ This prevents `ml`, `ML-algorithms`, `machine_learning` from proliferating.
 | `MCP_HOST` | `0.0.0.0` | Server bind address |
 | `BOOKMARKS_DB_PATH` | `~/.mcp-bookmarks/bookmarks.db` | SQLite path (SQLite mode only) |
 | `DYNAMODB_MODE` | `false` | Set `true` to use DynamoDB instead of SQLite |
-| `DYNAMODB_LINKS_TABLE` | `blogmarks-links` | DynamoDB bookmark items table |
-| `DYNAMODB_TAGS_TABLE` | `blogmarks-tags` | DynamoDB tag taxonomy table |
+| `DYNAMODB_LINKS_TABLE` | `mcp-bookmarks-links` | DynamoDB bookmark items table |
+| `DYNAMODB_TAGS_TABLE` | `mcp-bookmarks-tags` | DynamoDB tag taxonomy table |
 | `DYNAMODB_USER_ID` | `mcp-agent` | userId stamped on MCP-saved bookmarks |
 | `DYNAMODB_ORG_ID` | — | Optional org/tenant id for DynamoDB isolation + MCP usage tenant |
 | `DYNAMODB_USAGE_TABLE` | — | DynamoDB table for usage events when in cloud |
@@ -325,23 +294,14 @@ mcp-bookmarks/
 ├── tests/
 │   ├── test_smoke.py        # Core DB operations
 │   ├── test_api.py          # REST API
-│   ├── test_blogmarks_crew.py  # blogmarks-crew ingest (unittest)
 │   ├── test_e2e_sse.py      # Full SSE + MCP protocol
 │   └── test_management.py   # Tag management (merge, delete, update)
-├── src/mcp_bookmarks/
-│   ├── models.py            # Pydantic: OGMetadata, ArticleContent, Tag, Bookmark
-│   ├── db.py                # SQLite backend (aiosqlite, auto-migration)
-│   ├── dynamodb.py          # DynamoDB backend (boto3, DYNAMODB_MODE=true)
-│   ├── scraper.py           # httpx + BS4 + trafilatura
-│   ├── api.py               # REST routes
-│   ├── cli.py               # Terminal client
-│   └── server.py            # FastMCP: 14 tools, 4 prompts, 2 resources
-└── src/blogmarks_crew/
-    ├── cli.py               # blogmarks-crew ingest | agents | enrich | suggest-topics
-    ├── ingest.py            # Batch POST /api/save
-    ├── api_base_util.py     # Normalize --api-base to …/api
-    ├── rest_crew_tools.py   # httpx tools for CrewAI → REST
-    ├── crew_pipeline.py     # CrewAI URL-list topic clusters ([crew] extra)
-    ├── crew_enrich.py       # Librarian + editor after POST /save
-    └── crew_topics.py       # Topic slug suggestions from GET /bookmarks/{id}
+└── src/mcp_bookmarks/
+    ├── models.py            # Pydantic: OGMetadata, ArticleContent, Tag, Bookmark
+    ├── db.py                # SQLite backend (aiosqlite, auto-migration)
+    ├── dynamodb.py          # DynamoDB backend (boto3, DYNAMODB_MODE=true)
+    ├── scraper.py           # httpx + BS4 + trafilatura
+    ├── api.py               # REST routes
+    ├── cli.py               # Terminal client
+    └── server.py            # FastMCP: 14 tools, 4 prompts, 2 resources
 ```

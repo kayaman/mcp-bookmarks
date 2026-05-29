@@ -1,4 +1,4 @@
-# ACM TLS certificate for mcp.blogmarks.dev with DNS validation via Route 53.
+# ACM TLS certificate for var.mcp_hostname with DNS validation via Route 53.
 # Requires enable_alb=true; the certificate is used by the HTTPS ALB listener.
 
 resource "aws_acm_certificate" "mcp" {
@@ -39,7 +39,7 @@ resource "aws_acm_certificate_validation" "mcp" {
   validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
 }
 
-# A-alias record: mcp.blogmarks.dev → ALB DNS
+# A-alias record: var.mcp_hostname → ALB DNS
 resource "aws_route53_record" "mcp_alias" {
   count   = var.enable_alb ? 1 : 0
   zone_id = var.route53_zone_id
@@ -53,8 +53,9 @@ resource "aws_route53_record" "mcp_alias" {
   }
 }
 
-# AAAA alias for IPv6 clients. The blogmarks CDK created an AAAA pointing at
-# CloudFront; we overwrite it here so v6 traffic also lands on the ALB.
+# AAAA alias for IPv6 clients. allow_overwrite=true lets this replace any
+# existing AAAA record (e.g. one previously pointing at CloudFront), so v6
+# traffic also lands on the ALB.
 resource "aws_route53_record" "mcp_alias_aaaa" {
   count   = var.enable_alb ? 1 : 0
   zone_id = var.route53_zone_id

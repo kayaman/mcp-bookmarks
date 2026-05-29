@@ -2,14 +2,13 @@
 
 Resolves the Authorization header using two strategies, in order:
 
-1. **Cognito JWT** (issued by AWS Cognito User Pool, used by the Blogmarks PWA).
-   Verified against the user pool's JWKS; the resulting subject becomes the
-   per-request ``user_id``.
+1. **Cognito JWT** (issued by AWS Cognito User Pool, used by first-party
+   browser/mobile clients). Verified against the user pool's JWKS; the
+   resulting subject becomes the per-request ``user_id``.
 
-2. **Scoped bearer token** (``bm_v1_*``, minted by the read-mcp Lambda's
-   ``/mcp/connections`` endpoint and used by external MCP clients like Claude
-   and Cursor). Looked up by SHA-256 hash in the ``mcp-connections`` DynamoDB
-   table that the Lambda owns.
+2. **Scoped bearer token** (``bm_v1_*``, minted by an upstream provisioner
+   and used by external MCP clients like Claude and Cursor). Looked up by
+   SHA-256 hash in the ``mcp-connections`` DynamoDB table.
 
 When either succeeds, the middleware sets ``request.state.user_id`` (Cognito sub
 or connection user id) and ``request.state.tenant_id`` (the shared
@@ -105,7 +104,7 @@ class _CognitoVerifier:
         except jwt.PyJWTError:
             return None
         # Cognito issues both ID and Access tokens; we accept ID tokens only —
-        # they are what the PWA calls authenticatedJson with.
+        # they're what first-party browser/mobile clients send.
         if claims.get("token_use") != "id":
             return None
         return claims
@@ -117,13 +116,13 @@ class _CognitoVerifier:
 class _ScopedTokenVerifier:
     """Look up a ``bm_v1_*`` token in the mcp-connections DynamoDB table.
 
-    The read-mcp Lambda mints these tokens via ``POST /mcp/connections`` and
-    stores their SHA-256 hash on the row. Table name comes from
-    ``MCP_CONNECTIONS_TABLE`` (default ``blogmarks-mcp-connections``).
+    An upstream provisioner mints these tokens (e.g. via a ``POST /mcp/connections``
+    endpoint) and stores their SHA-256 hash on the row. Table name comes from
+    ``MCP_CONNECTIONS_TABLE`` (default ``mcp-bookmarks-connections``).
     """
 
     def __init__(self) -> None:
-        self.table_name = os.environ.get("MCP_CONNECTIONS_TABLE", "blogmarks-mcp-connections")
+        self.table_name = os.environ.get("MCP_CONNECTIONS_TABLE", "mcp-bookmarks-connections")
         self.region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._table: Any | None = None
 
@@ -153,10 +152,8 @@ class _ScopedTokenVerifier:
             # FilterExpression="tokenHash = :h"` reads exactly one item, applies
             # the filter, and returns empty unless that single read happens to
             # be the matching row. With more than a handful of rows in the
-            # connections table, this path silently returned `invalid_token`
-            # for every scoped bm_v1_ caller until the GSI was created (the
-            # blogmarks May 2026 incident — required adding the GSI manually
-            # via aws CLI to unblock).
+            # connections table, this path silently returns `invalid_token`
+            # for every scoped bm_v1_ caller — make sure the GSI exists.
             #
             # Without Limit, the scan reads a 1 MB page and may need to
             # paginate via ExclusiveStartKey. The connections table is small
@@ -239,7 +236,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         if not token:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-        # Cognito JWT path (PWA users).
+        # Cognito JWT path (first-party browser/mobile clients).
         claims = self._cognito.verify(token)
         if claims is not None:
             user_id = str(claims.get("sub") or "")

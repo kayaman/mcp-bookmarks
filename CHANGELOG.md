@@ -12,10 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Streamable HTTP transport** (`/mcp`) mounted alongside the existing SSE transport (`/sse`), enabling ChatGPT custom connectors and any HTTP-native MCP client to connect to the same server.
 - `tests/test_transports.py`: smoke tests for both SSE and Streamable HTTP transports and the REST `/api/stats` endpoint.
 - **Terraform — HTTPS infra** (`terraform/acm.tf`, updates to `alb.tf`, `variables.tf`, `outputs.tf`):
-  - ACM certificate for `mcp.blogmarks.dev` with Route 53 DNS validation.
+  - ACM certificate for `var.mcp_hostname` with Route 53 DNS validation.
   - ALB HTTPS :443 listener with TLS 1.3 policy; HTTP :80 redirects to HTTPS.
   - ALB `idle_timeout = 300s` to keep SSE long-polls alive.
-  - `mcp_public_url` output (`https://mcp.blogmarks.dev`).
+  - `mcp_public_url` output (`https://<var.mcp_hostname>`).
 - **Terraform — auth** (`terraform/secrets.tf`): Secrets Manager entry for `MCP_API_KEYS`; injected into ECS task via the `secrets` block.
 - `docs/demo/` — copy-pasteable connection guides for Claude Code CLI, Cursor IDE, and ChatGPT custom connector; shared 5-step demo flow; operator infra-apply runbook.
 - `scripts/capture_demo.py` — automated 5-step demo flow script (local or production).

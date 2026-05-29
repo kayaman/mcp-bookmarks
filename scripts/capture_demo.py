@@ -7,7 +7,7 @@ Usage:
     uv run python scripts/capture_demo.py
 
     # Against production:
-    MCP_BASE_URL=https://mcp.blogmarks.dev \
+    MCP_BASE_URL=https://mcp.example.com \
     MCP_API_KEY=<your-key> \
     uv run python scripts/capture_demo.py
 
@@ -110,11 +110,11 @@ async def run_demo(base_url: str, api_key: str | None = None):
 
             print(f"\n{'='*60}")
             print("  PASS — all 5 steps completed.")
-            print(f"  Open https://blogmarks.dev to verify item in the PWA.")
+            print(f"  Use get_bookmark to verify the saved item.")
             print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
     base_url = os.environ.get("MCP_BASE_URL", "http://localhost:8000")
-    api_key = os.environ.get("MCP_API_KEY") or os.environ.get("BLOGMARKS_MCP_KEY")
+    api_key = os.environ.get("MCP_API_KEY")
     asyncio.run(run_demo(base_url, api_key))

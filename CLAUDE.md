@@ -48,7 +48,7 @@ This is an MCP (Model Context Protocol) server exposing bookmark management via 
 
 ## DynamoDB Mode
 
-Set `DYNAMODB_MODE=true` to connect to the live blogmarks AWS tables instead of local SQLite. This lets the MCP server read and write the same data as the blogmarks PWA.
+Set `DYNAMODB_MODE=true` to connect to AWS DynamoDB tables instead of local SQLite. The default table names (`mcp-bookmarks-links` / `mcp-bookmarks-tags`) can be overridden to point at any compatible external store.
 
 ```bash
 DYNAMODB_MODE=true \
@@ -56,14 +56,14 @@ AWS_DEFAULT_REGION=us-east-1 \
 uv run mcp-bookmarks
 ```
 
-The DynamoDB adapter is in `src/mcp_bookmarks/dynamodb.py` and implements the same interface as `Database` in `db.py`. Bookmarks saved via MCP are tagged with `userId=mcp-agent` so the `blogmarks-ai-processor` Lambda automatically enriches them.
+The DynamoDB adapter is in `src/mcp_bookmarks/dynamodb.py` and implements the same interface as `Database` in `db.py`. Bookmarks saved via MCP are tagged with `userId=mcp-agent` so a downstream enrichment Lambda (if you run one) can identify them.
 
 **DynamoDB mode env vars:**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DYNAMODB_LINKS_TABLE` | `blogmarks-links` | Bookmark items table |
-| `DYNAMODB_TAGS_TABLE` | `blogmarks-tags` | Tag taxonomy table |
+| `DYNAMODB_LINKS_TABLE` | `mcp-bookmarks-links` | Bookmark items table |
+| `DYNAMODB_TAGS_TABLE` | `mcp-bookmarks-tags` | Tag taxonomy table |
 | `DYNAMODB_USER_ID` | `mcp-agent` | userId stamped on MCP-saved bookmarks |
 
 Standard AWS credentials must be available (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / profile).

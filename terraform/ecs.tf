@@ -109,14 +109,14 @@ resource "aws_iam_role_policy" "ecs_task_dynamo" {
         aws_dynamodb_table.subscriptions.arn,
         "${aws_dynamodb_table.subscriptions.arn}/index/*",
         ],
-        # mcp-connections table is owned by the blogmarks CDK (read-mcp Lambda
-        # writes scoped tokens here). BearerAuthMiddleware needs read access
-        # to validate bm_v1_* tokens. Grant by name when configured.
+        # mcp-connections table is owned by an upstream provisioner that
+        # writes scoped tokens. BearerAuthMiddleware needs read access to
+        # validate bm_v1_* tokens. Grant by name when configured.
         var.mcp_connections_table != "" ? [
           "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${var.mcp_connections_table}",
           "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${var.mcp_connections_table}/index/*",
         ] : [],
-        # Override tables (blogmarks app's existing production tables).
+        # Override tables (e.g. existing external production tables).
         var.links_table_override != "" ? [
           "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${var.links_table_override}",
           "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${var.links_table_override}/index/*",
@@ -143,8 +143,9 @@ locals {
     environment = [
       { name = "DYNAMODB_MODE", value = "true" },
       # When *_table_override is set, mcp-bookmarks reads/writes the
-      # blogmarks app's production tables instead of the terraform-managed
-      # blogmarks-prod-* tables. Lets PWA users see their existing bookmarks.
+      # specified external tables instead of the terraform-managed
+      # ${var.project_name}-${var.environment}-* tables. Useful for
+      # sharing data with an existing external bookmark store.
       { name = "DYNAMODB_LINKS_TABLE", value = coalesce(var.links_table_override, aws_dynamodb_table.links.name) },
       { name = "DYNAMODB_TAGS_TABLE", value = coalesce(var.tags_table_override, aws_dynamodb_table.tags.name) },
       { name = "DYNAMODB_USAGE_TABLE", value = aws_dynamodb_table.usage_events.name },
@@ -155,7 +156,7 @@ locals {
       { name = "MCP_PORT", value = tostring(var.mcp_container_port) },
       { name = "AI_GATEWAY_BASE_URL", value = var.ai_gateway_url },
       { name = "AI_GATEWAY_API_KEY", value = var.gateway_api_key },
-      # ── Bearer auth for PWA traffic (Cognito JWT) + bm_v1_* scoped tokens ──
+      # ── Bearer auth: Cognito JWT (first-party clients) + bm_v1_* scoped tokens ──
       { name = "MCP_BEARER_AUTH", value = var.mcp_bearer_auth ? "true" : "false" },
       { name = "COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
       { name = "COGNITO_CLIENT_ID", value = var.cognito_client_id },

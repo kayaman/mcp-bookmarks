@@ -1,4 +1,4 @@
-# O'Reilly Learning + Blogmarks MCP
+# O'Reilly Learning + mcp-bookmarks
 
 ## Setup
 
