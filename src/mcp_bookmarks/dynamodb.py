@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 
+from .backend import DYNAMODB_CAPABILITIES
 from .models import Bookmark, Tag
 
 if TYPE_CHECKING:
@@ -116,7 +117,14 @@ class DynamoDBDatabase:
     Pass a ``Tenant`` for per-request isolation; omit (or pass ``None``) to
     fall back to the module-level ``DYNAMODB_ORG_ID`` / ``DYNAMODB_USER_ID``
     env vars for backward compatibility with single-tenant deployments.
+
+    Conforms to :class:`mcp_bookmarks.backend.BookmarkBackend` (see that
+    module for the documented contract).
     """
+
+    # Capability matrix for the DynamoDB backend.
+    # See src/mcp_bookmarks/backend.py for the documented flags.
+    capabilities = DYNAMODB_CAPABILITIES
 
     def __init__(self, tenant: "Tenant | None" = None):
         from .models import Tenant as _Tenant  # avoid circular at module level
