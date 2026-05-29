@@ -31,9 +31,10 @@ from pathlib import Path
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, HTMLResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 from .api_envelope import ErrorCode, error_response
+from .security_headers import compute_script_hash
 from .api_requests import (
     BookmarkSummaryRequest,
     BookmarkTagsRequest,
@@ -481,19 +482,217 @@ async def api_ai_gateway_status(request: Request) -> JSONResponse:
     return JSONResponse(llm_ensemble.gateway_status_public())
 
 
+# ── /ai-gateway inline script (extracted so its SHA-256 can ride the CSP) ──
+#
+# Plain single-brace JavaScript. Embedded into the HTML f-string via a normal
+# `{_AI_GATEWAY_INLINE_SCRIPT}` substitution; Python does not re-process the
+# inner braces because f-string interpolation just stringifies the value.
+# Recompute the hash whenever you edit this body — the CSP must match.
+_AI_GATEWAY_INLINE_SCRIPT = """(function() {
+    var STORAGE_BEARER = 'mcp-bookmarks-ai-gateway-bearer';
+    var STORAGE_XKEY = 'mcp-bookmarks-ai-gateway-xkey';
+    var apiKeyEl = document.getElementById('apiKey');
+    var apiKeyHeaderEl = document.getElementById('apiKeyHeader');
+    var resultPanel = document.getElementById('resultPanel');
+    apiKeyEl.value = sessionStorage.getItem(STORAGE_BEARER) || '';
+    apiKeyHeaderEl.value = sessionStorage.getItem(STORAGE_XKEY) || '';
+    apiKeyEl.addEventListener('change', function() {
+        var v = apiKeyEl.value.trim();
+        if (v) sessionStorage.setItem(STORAGE_BEARER, v); else sessionStorage.removeItem(STORAGE_BEARER);
+    });
+    apiKeyHeaderEl.addEventListener('change', function() {
+        var v = apiKeyHeaderEl.value.trim();
+        if (v) sessionStorage.setItem(STORAGE_XKEY, v); else sessionStorage.removeItem(STORAGE_XKEY);
+    });
+
+    function authHeaders() {
+        var h = {};
+        var b = apiKeyEl.value.trim();
+        var x = apiKeyHeaderEl.value.trim();
+        if (b) h['Authorization'] = 'Bearer ' + b;
+        if (x) h['X-API-Key'] = x;
+        return h;
+    }
+
+    function parseModels(raw) {
+        if (!raw || !raw.trim()) return undefined;
+        var lines = raw.split(/[\\n,]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+        return lines.length ? lines : undefined;
+    }
+
+    function esc(s) {
+        if (s == null) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    async function loadStatus() {
+        var errEl = document.getElementById('loadErr');
+        errEl.style.display = 'none';
+        var bar = document.getElementById('statusBar');
+        bar.innerHTML = '';
+        try {
+            var r = await fetch('/api/ai-gateway/status', { headers: authHeaders() });
+            if (r.status === 401) {
+                errEl.textContent = 'Unauthorized (401). Set REST API key above if MCP_API_KEYS is configured.';
+                errEl.style.display = 'block';
+                return;
+            }
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            var d = await r.json();
+            function chip(label, val, cls) {
+                cls = cls || '';
+                return '<div class="stat"><span class="stat-label">' + esc(label) + '</span><div class="val ' + cls + '">' + esc(String(val)) + '</div></div>';
+            }
+            bar.innerHTML =
+                chip('Ensemble', d.ensemble_enabled ? 'enabled' : 'disabled', d.ensemble_enabled ? '' : 'warn') +
+                chip('Gateway host', d.gateway_display) +
+                chip('LLM API key', d.has_api_key_configured ? 'configured' : 'missing', d.has_api_key_configured ? '' : 'err') +
+                chip('Default models', (d.default_models && d.default_models.length) ? d.default_models.join(', ') : '(none)') +
+                chip('Default judge', d.default_judge);
+        } catch (e) {
+            errEl.textContent = 'Could not load status: ' + e.message;
+            errEl.style.display = 'block';
+        }
+    }
+
+    document.getElementById('runBtn').addEventListener('click', async function() {
+        var btn = document.getElementById('runBtn');
+        var task = document.getElementById('task').value.trim();
+        if (!task) { alert('Enter a task'); return; }
+        btn.disabled = true;
+        resultPanel.style.display = 'none';
+        resultPanel.setAttribute('aria-busy', 'true');
+        try {
+            var body = { task: task };
+            var models = parseModels(document.getElementById('models').value);
+            if (models) body.models = models;
+            var judge = document.getElementById('judge').value.trim();
+            if (judge) body.judge_model = judge;
+            var headers = Object.assign({ 'Content-Type': 'application/json' }, authHeaders());
+            var r = await fetch('/api/ensemble', { method: 'POST', headers: headers, body: JSON.stringify(body) });
+            var data = await r.json().catch(function() { return {}; });
+            if (r.status === 403) {
+                var msg403 = (data.error && data.error.message) || data.error || 'Forbidden: set ENSEMBLE_ENABLED=true.';
+                if (data.hint) msg403 += '\\n' + data.hint;
+                else msg403 += ' See docs/ai-gateway-ensemble.md';
+                alert(msg403);
+                return;
+            }
+            if (r.status === 401) {
+                alert('Unauthorized: set REST API key if MCP_API_KEYS is active.');
+                return;
+            }
+            if (r.status === 429) {
+                alert((data.error && data.error.message) || data.error || 'Quota exceeded');
+                return;
+            }
+            if (!r.ok) {
+                alert((data.error && data.error.message) || data.error || ('HTTP ' + r.status));
+                return;
+            }
+            resultPanel.style.display = 'block';
+            document.getElementById('partialBadge').style.display = data.partial ? 'inline-block' : 'none';
+            var fb = document.getElementById('finalBlock');
+            fb.innerHTML = '';
+            if (data.answer != null) {
+                var rationale = data.rationale ? '<div class="meta">Rationale: ' + esc(data.rationale) + '</div>' : '';
+                var wm = (data.winner_model != null) ? '<div class="meta">Winner: ' + esc(data.winner_model) + (data.chosen_index != null ? ' (index ' + esc(String(data.chosen_index)) + ')' : '') + '</div>' : '';
+                var jm = data.judge_model ? '<div class="meta">Judge: ' + esc(data.judge_model) + '</div>' : '';
+                fb.innerHTML = '<div class="final"><strong>Answer</strong><div class="answer">' + esc(data.answer) + '</div>' + rationale + wm + jm + '</div>';
+            } else if (data.error) {
+                fb.innerHTML = '<div class="banner bad">' + esc((data.error && data.error.message) || data.error) + '</div>';
+            }
+            var cc = document.getElementById('candidates');
+            cc.innerHTML = '';
+            (data.candidates || []).forEach(function(c) {
+                var div = document.createElement('div');
+                div.className = 'card';
+                var err = c.error;
+                var bodyHtml = err
+                    ? '<div class="body err">' + esc(err) + '</div>'
+                    : '<div class="body">' + esc(c.content || '') + '</div>' + (c.truncated ? '<div class="hint">truncated</div>' : '');
+                div.innerHTML = '<h3>' + esc(c.model || '?') + '</h3>' + bodyHtml;
+                cc.appendChild(div);
+            });
+            if (data.judge_raw && !data.rationale) {
+                var note = document.createElement('div');
+                note.className = 'hint';
+                note.textContent = 'Judge raw (preview): ' + (data.judge_raw || '').slice(0, 500);
+                fb.appendChild(note);
+            }
+        } catch (e) {
+            alert('Request failed: ' + e.message);
+        } finally {
+            btn.disabled = false;
+            resultPanel.setAttribute('aria-busy', 'false');
+        }
+    });
+
+    loadStatus();
+})();"""
+
+# SHA-256 of the literal byte stream above. Wired into the CSP by
+# SecurityHeadersMiddleware so the browser can validate the inline script
+# without ``'unsafe-inline'`` on script-src.
+AI_GATEWAY_SCRIPT_HASH = compute_script_hash(_AI_GATEWAY_INLINE_SCRIPT)
+
+
+# ── Static asset: self-hosted JetBrains Mono ──────────────────────
+
+
+_STATIC_DIR = Path(__file__).parent / "_static"
+
+
+def _read_font_bytes() -> bytes:
+    """Load the self-hosted JetBrains Mono Regular woff2 once at module import."""
+    path = _STATIC_DIR / "JetBrainsMono-Regular.woff2"
+    return path.read_bytes()
+
+
+_JETBRAINS_MONO_WOFF2 = _read_font_bytes()
+
+
+async def static_font_jetbrains_mono(request: Request) -> Response:
+    """GET /static/jetbrains-mono.woff2 — self-hosted, long-cached font asset.
+
+    Self-hosting kills two birds: the Google Fonts CSS round-trip stops
+    being render-blocking, and the font-swap layout shift on the mono
+    elements (``.stat .val``, ``.card h3``) goes away.
+    """
+    _ = request
+    return Response(
+        content=_JETBRAINS_MONO_WOFF2,
+        media_type="font/woff2",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 async def ai_gateway_page(request: Request) -> HTMLResponse:
     """GET /ai-gateway (mounted at app root) — Visual tester for POST /api/ensemble."""
-    _ = request  # Starlette passes request; page uses same-origin fetch
-    html = """<!DOCTYPE html>
+    canonical = f"{request.url.scheme}://{request.url.netloc}/ai-gateway"
+    html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AI Gateway — Ensemble + Judge</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=system-ui:wght@400;600;700&display=swap" rel="stylesheet">
+    <meta name="description" content="Browser tester for the mcp-bookmarks AI Gateway ensemble endpoint. Run a prompt across multiple models and let an LLM judge pick the best answer.">
+    <meta name="theme-color" content="#0f0f1a">
+    <title>AI Gateway — Ensemble + Judge · mcp-bookmarks</title>
+    <link rel="canonical" href="{canonical}">
+    <link rel="preload" href="/static/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
     <style>
+        @font-face {{
+            font-family: "JetBrains Mono";
+            src: url("/static/jetbrains-mono.woff2") format("woff2");
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }}
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
             font-family: system-ui, -apple-system, sans-serif;
@@ -510,7 +709,7 @@ async def ai_gateway_page(request: Request) -> HTMLResponse:
             margin-bottom: 0.25rem;
             font-weight: 700;
         }}
-        .sub {{ color: #888; font-size: 0.9rem; margin-bottom: 1.25rem; }}
+        .sub {{ color: #a0a0a0; font-size: 0.9rem; margin-bottom: 1.25rem; }}
         .status-bar {{
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -523,12 +722,12 @@ async def ai_gateway_page(request: Request) -> HTMLResponse:
             border-radius: 12px;
             padding: 14px 16px;
         }}
-        .stat label {{
+        .stat-label {{
             display: block;
             font-size: 10px;
             text-transform: uppercase;
             letter-spacing: 1.2px;
-            color: #666;
+            color: #a0a0a0;
             margin-bottom: 6px;
         }}
         .stat .val {{
@@ -560,7 +759,7 @@ async def ai_gateway_page(request: Request) -> HTMLResponse:
         }}
         textarea {{ min-height: 100px; resize: vertical; }}
         .row {{ margin-bottom: 14px; }}
-        .hint {{ font-size: 0.75rem; color: #64748b; margin-top: 4px; }}
+        .hint {{ font-size: 0.75rem; color: #94a3b8; margin-top: 4px; }}
         button.primary {{
             background: linear-gradient(135deg, #4ade80, #22d3ee);
             color: #0f0f1a;
@@ -618,189 +817,53 @@ async def ai_gateway_page(request: Request) -> HTMLResponse:
 </head>
 <body>
     <div class="wrap">
-        <h1>AI Gateway — Ensemble + Judge</h1>
-        <p class="sub">Test <code>POST /api/ensemble</code> from the browser. Configure the server with <code>docs/ai-gateway-ensemble.md</code>.</p>
-        <div id="loadErr" class="banner bad" style="display:none"></div>
-        <div class="status-bar" id="statusBar"></div>
-        <div class="panel">
-            <h2>Request</h2>
-            <div class="row">
-                <label class="f" for="apiKey">REST API key (optional)</label>
-                <input type="password" id="apiKey" autocomplete="off" placeholder="Bearer token if MCP_API_KEYS is set">
-                <p class="hint">Stored only in <code>sessionStorage</code> for this tab (cleared when the tab closes). Use <code>X-API-Key</code> alternative below if you prefer.</p>
-            </div>
-            <div class="row">
-                <label class="f" for="apiKeyHeader">Or X-API-Key (optional)</label>
-                <input type="password" id="apiKeyHeader" autocomplete="off" placeholder="Same key sent as X-API-Key header">
-            </div>
-            <div class="row">
-                <label class="f" for="task">Task</label>
-                <textarea id="task" placeholder="User prompt for all candidate models…"></textarea>
-            </div>
-            <div class="row">
-                <label class="f" for="models">Models (comma or one per line; optional if ENSEMBLE_MODELS is set)</label>
-                <textarea id="models" style="min-height:64px" placeholder="gpt-4o-mini, claude-3-haiku…"></textarea>
-            </div>
-            <div class="row">
-                <label class="f" for="judge">Judge model (optional)</label>
-                <input type="text" id="judge" placeholder="Default from JUDGE_MODEL env">
-            </div>
-            <button type="button" class="primary" id="runBtn">Run ensemble</button>
-        </div>
-        <div class="panel" id="resultPanel" style="display:none">
-            <h2>Result <span id="partialBadge" class="badge" style="display:none">partial</span></h2>
-            <div id="finalBlock"></div>
-            <h2 style="margin-top:1.25rem">Candidates</h2>
-            <div class="candidates" id="candidates"></div>
-        </div>
+        <header>
+            <h1>AI Gateway — Ensemble + Judge</h1>
+            <p class="sub">Test <code>POST /api/ensemble</code> from the browser. Configure the server with <code>docs/ai-gateway-ensemble.md</code>.</p>
+        </header>
+        <main>
+            <div id="loadErr" class="banner bad" role="alert" aria-live="assertive" style="display:none"></div>
+            <div class="status-bar" id="statusBar" aria-live="polite"></div>
+            <section class="panel" aria-label="Ensemble request">
+                <h2>Request</h2>
+                <div class="row">
+                    <label class="f" for="apiKey">REST API key (optional)</label>
+                    <input type="password" id="apiKey" autocomplete="off" placeholder="Bearer token if MCP_API_KEYS is set">
+                    <p class="hint">Stored only in <code>sessionStorage</code> for this tab (cleared when the tab closes). Use <code>X-API-Key</code> alternative below if you prefer.</p>
+                </div>
+                <div class="row">
+                    <label class="f" for="apiKeyHeader">Or X-API-Key (optional)</label>
+                    <input type="password" id="apiKeyHeader" autocomplete="off" placeholder="Same key sent as X-API-Key header">
+                </div>
+                <div class="row">
+                    <label class="f" for="task">Task</label>
+                    <textarea id="task" placeholder="User prompt for all candidate models…"></textarea>
+                </div>
+                <div class="row">
+                    <label class="f" for="models">Models (comma or one per line; optional if ENSEMBLE_MODELS is set)</label>
+                    <textarea id="models" style="min-height:64px" placeholder="gpt-4o-mini, claude-3-haiku…"></textarea>
+                </div>
+                <div class="row">
+                    <label class="f" for="judge">Judge model (optional)</label>
+                    <input type="text" id="judge" placeholder="Default from JUDGE_MODEL env">
+                </div>
+                <button type="button" class="primary" id="runBtn">Run ensemble</button>
+            </section>
+            <section class="panel" id="resultPanel" aria-label="Ensemble result" aria-live="polite" aria-busy="false" style="display:none">
+                <h2>Result <span id="partialBadge" class="badge" style="display:none">partial</span></h2>
+                <div id="finalBlock"></div>
+                <h2 style="margin-top:1.25rem">Candidates</h2>
+                <div class="candidates" id="candidates"></div>
+            </section>
+        </main>
     </div>
-    <script>
-(function() {{
-    var STORAGE_BEARER = 'mcp-bookmarks-ai-gateway-bearer';
-    var STORAGE_XKEY = 'mcp-bookmarks-ai-gateway-xkey';
-    var apiKeyEl = document.getElementById('apiKey');
-    var apiKeyHeaderEl = document.getElementById('apiKeyHeader');
-    apiKeyEl.value = sessionStorage.getItem(STORAGE_BEARER) || '';
-    apiKeyHeaderEl.value = sessionStorage.getItem(STORAGE_XKEY) || '';
-    apiKeyEl.addEventListener('change', function() {{
-        var v = apiKeyEl.value.trim();
-        if (v) sessionStorage.setItem(STORAGE_BEARER, v); else sessionStorage.removeItem(STORAGE_BEARER);
-    }});
-    apiKeyHeaderEl.addEventListener('change', function() {{
-        var v = apiKeyHeaderEl.value.trim();
-        if (v) sessionStorage.setItem(STORAGE_XKEY, v); else sessionStorage.removeItem(STORAGE_XKEY);
-    }});
-
-    function authHeaders() {{
-        var h = {{}};
-        var b = apiKeyEl.value.trim();
-        var x = apiKeyHeaderEl.value.trim();
-        if (b) h['Authorization'] = 'Bearer ' + b;
-        if (x) h['X-API-Key'] = x;
-        return h;
-    }}
-
-    function parseModels(raw) {{
-        if (!raw || !raw.trim()) return undefined;
-        var lines = raw.split(/[\\n,]+/).map(function(s) {{ return s.trim(); }}).filter(Boolean);
-        return lines.length ? lines : undefined;
-    }}
-
-    function esc(s) {{
-        if (s == null) return '';
-        var d = document.createElement('div');
-        d.textContent = s;
-        return d.innerHTML;
-    }}
-
-    async function loadStatus() {{
-        var errEl = document.getElementById('loadErr');
-        errEl.style.display = 'none';
-        var bar = document.getElementById('statusBar');
-        bar.innerHTML = '';
-        try {{
-            var r = await fetch('/api/ai-gateway/status', {{ headers: authHeaders() }});
-            if (r.status === 401) {{
-                errEl.textContent = 'Unauthorized (401). Set REST API key above if MCP_API_KEYS is configured.';
-                errEl.style.display = 'block';
-                return;
-            }}
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            var d = await r.json();
-            function chip(label, val, cls) {{
-                cls = cls || '';
-                return '<div class="stat"><label>' + esc(label) + '</label><div class="val ' + cls + '">' + esc(String(val)) + '</div></div>';
-            }}
-            bar.innerHTML =
-                chip('Ensemble', d.ensemble_enabled ? 'enabled' : 'disabled', d.ensemble_enabled ? '' : 'warn') +
-                chip('Gateway host', d.gateway_display) +
-                chip('LLM API key', d.has_api_key_configured ? 'configured' : 'missing', d.has_api_key_configured ? '' : 'err') +
-                chip('Default models', (d.default_models && d.default_models.length) ? d.default_models.join(', ') : '(none)') +
-                chip('Default judge', d.default_judge);
-        }} catch (e) {{
-            errEl.textContent = 'Could not load status: ' + e.message;
-            errEl.style.display = 'block';
-        }}
-    }}
-
-    document.getElementById('runBtn').addEventListener('click', async function() {{
-        var btn = document.getElementById('runBtn');
-        var task = document.getElementById('task').value.trim();
-        if (!task) {{ alert('Enter a task'); return; }}
-        btn.disabled = true;
-        var panel = document.getElementById('resultPanel');
-        panel.style.display = 'none';
-        try {{
-            var body = {{ task: task }};
-            var models = parseModels(document.getElementById('models').value);
-            if (models) body.models = models;
-            var judge = document.getElementById('judge').value.trim();
-            if (judge) body.judge_model = judge;
-            var headers = Object.assign({{ 'Content-Type': 'application/json' }}, authHeaders());
-            var r = await fetch('/api/ensemble', {{ method: 'POST', headers: headers, body: JSON.stringify(body) }});
-            var data = await r.json().catch(function() {{ return {{}}; }});
-            if (r.status === 403) {{
-                var msg403 = data.error || 'Forbidden: set ENSEMBLE_ENABLED=true.';
-                if (data.hint) msg403 += '\\n' + data.hint;
-                else msg403 += ' See docs/ai-gateway-ensemble.md';
-                alert(msg403);
-                return;
-            }}
-            if (r.status === 401) {{
-                alert('Unauthorized: set REST API key if MCP_API_KEYS is active.');
-                return;
-            }}
-            if (r.status === 429) {{
-                alert(data.error || 'Quota exceeded');
-                return;
-            }}
-            if (!r.ok) {{
-                alert(data.error || ('HTTP ' + r.status));
-                return;
-            }}
-            panel.style.display = 'block';
-            document.getElementById('partialBadge').style.display = data.partial ? 'inline-block' : 'none';
-            var fb = document.getElementById('finalBlock');
-            fb.innerHTML = '';
-            if (data.answer != null) {{
-                var rationale = data.rationale ? '<div class="meta">Rationale: ' + esc(data.rationale) + '</div>' : '';
-                var wm = (data.winner_model != null) ? '<div class="meta">Winner: ' + esc(data.winner_model) + (data.chosen_index != null ? ' (index ' + esc(String(data.chosen_index)) + ')' : '') + '</div>' : '';
-                var jm = data.judge_model ? '<div class="meta">Judge: ' + esc(data.judge_model) + '</div>' : '';
-                fb.innerHTML = '<div class="final"><strong>Answer</strong><div class="answer">' + esc(data.answer) + '</div>' + rationale + wm + jm + '</div>';
-            }} else if (data.error) {{
-                fb.innerHTML = '<div class="banner bad">' + esc(data.error) + '</div>';
-            }}
-            var cc = document.getElementById('candidates');
-            cc.innerHTML = '';
-            (data.candidates || []).forEach(function(c) {{
-                var div = document.createElement('div');
-                div.className = 'card';
-                var err = c.error;
-                var bodyHtml = err
-                    ? '<div class="body err">' + esc(err) + '</div>'
-                    : '<div class="body">' + esc(c.content || '') + '</div>' + (c.truncated ? '<div class="hint">truncated</div>' : '');
-                div.innerHTML = '<h3>' + esc(c.model || '?') + '</h3>' + bodyHtml;
-                cc.appendChild(div);
-            }});
-            if (data.judge_raw && !data.rationale) {{
-                var note = document.createElement('div');
-                note.className = 'hint';
-                note.textContent = 'Judge raw (preview): ' + (data.judge_raw || '').slice(0, 500);
-                fb.appendChild(note);
-            }}
-        }} catch (e) {{
-            alert('Request failed: ' + e.message);
-        }} finally {{
-            btn.disabled = false;
-        }}
-    }});
-
-    loadStatus();
-}})();
-    </script>
+    <script type="module">{_AI_GATEWAY_INLINE_SCRIPT}</script>
 </body>
 </html>"""
-    return HTMLResponse(html)
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "public, max-age=300, must-revalidate"},
+    )
 
 
 async def stripe_webhook(request: Request) -> JSONResponse:
@@ -883,12 +946,16 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
         f")"
     )
 
+    canonical = f"{scheme}://{host}/bookmarklet"
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>MCP Bookmarks — Bookmarklet</title>
+    <meta name="description" content="Install the MCP Bookmarks bookmarklet: drag the button to your bookmarks bar and save any page to your AI-tagged knowledge base with one click.">
+    <meta name="theme-color" content="#0f0f1a">
+    <title>Install the MCP Bookmarks bookmarklet</title>
+    <link rel="canonical" href="{canonical}">
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -910,7 +977,7 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
             width: 100%;
         }}
         h1 {{ color: #4ade80; margin-bottom: 0.5rem; font-size: 1.5rem; }}
-        .subtitle {{ color: #888; margin-bottom: 2rem; }}
+        .subtitle {{ color: #a0a0a0; margin-bottom: 2rem; }}
         .bookmarklet-link {{
             display: inline-block;
             background: linear-gradient(135deg, #4ade80, #22d3ee);
@@ -925,6 +992,7 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
             transition: transform 0.1s;
         }}
         .bookmarklet-link:hover {{ transform: scale(1.05); }}
+        .bookmarklet-link:focus-visible {{ outline: 3px solid #4ade80; outline-offset: 2px; }}
         .instructions {{
             background: #12122a;
             border-radius: 8px;
@@ -943,23 +1011,23 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
             margin-top: 2rem;
             padding-top: 1rem;
             border-top: 1px solid #2a2a4a;
-            color: #666;
+            color: #a0a0a0;
             font-size: 0.85rem;
         }}
     </style>
 </head>
 <body>
-    <div class="card">
+    <main aria-label="Bookmarklet installation" class="card">
         <h1>📚 MCP Bookmarks</h1>
         <p class="subtitle">Save any page to your AI knowledge base with one click.</p>
 
         <p>Drag this button to your bookmarks bar:</p>
 
-        <a class="bookmarklet-link" href="{bookmarklet_js}">
+        <a class="bookmarklet-link" rel="nofollow" aria-label="Save to MCP bookmarklet (drag to bookmarks bar)" href="{bookmarklet_js}">
             📌 Save to MCP
         </a>
 
-        <div class="instructions">
+        <section class="instructions" aria-label="Installation steps">
             <strong>How to install:</strong>
             <ol>
                 <li>Make sure your bookmarks bar is visible</li>
@@ -968,9 +1036,9 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
                 <li>The page URL, title, and full article text are saved automatically</li>
                 <li>Open Claude and use the MCP tools to tag and summarize</li>
             </ol>
-        </div>
+        </section>
 
-        <div class="server-info">
+        <footer class="server-info">
             Server: <code>{scheme}://{host}</code><br>
             API: <code>POST /api/save</code> &middot;
             <code>GET /api/bookmarks</code> &middot;
@@ -978,11 +1046,17 @@ async def bookmarklet_page(request: Request) -> HTMLResponse:
             <code>GET /api/stats</code> &middot;
             <code>GET /api/bookmarks/&lt;id&gt;</code> &middot;
             <code>POST /api/tag</code>
-        </div>
-    </div>
+        </footer>
+    </main>
 </body>
 </html>"""
-    return HTMLResponse(html)
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "private, max-age=600",
+            "Vary": "Host",
+        },
+    )
 
 
 # ── Build the Starlette app ──────────────────────────────────────
