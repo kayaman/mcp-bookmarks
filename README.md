@@ -292,6 +292,7 @@ mcp-bookmarks/
 
 ## Documentation index
 
+- **Architecture decisions** — [`docs/adr/`](docs/adr/): seven decision records covering dual-mode storage, single-app transports, quota design, capability flags, vector roadmap, deploy boundary, and tenancy
 - **Product positioning** — [`docs/product-positioning.md`](docs/product-positioning.md): vertical-first hybrid boundary
 - **Production readiness** — [`docs/production-readiness.md`](docs/production-readiness.md): what's wired, what to verify
 - **Production smoke** — [`docs/production-smoke.md`](docs/production-smoke.md): HTTPS auth gate, SSE/Streamable checks, E2E DynamoDB validation
