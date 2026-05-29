@@ -212,9 +212,133 @@ DYNAMODB_CAPABILITIES = BackendCapabilities(
 )
 
 
+# ── Capability enforcement (WDN-394 / OSS-4) ───────────────────────
+
+
+class UnsupportedCapability(Exception):
+    """Raised when a caller invokes a capability the active backend doesn't support.
+
+    Carries enough structured context that transport layers can format it
+    into a stable error envelope:
+      - ``capability``: the missing flag name (e.g. ``"semantic_search"``)
+      - ``backend``: the backend's display name (e.g. ``"dynamodb"``)
+      - ``method``: the *attempted* method name (optional, for the error message)
+
+    The transport layer (REST / MCP) is the right place to map this to a
+    user-facing response. The backend protocol and concrete adapters never
+    raise this — only the call-site guards do.
+    """
+
+    def __init__(
+        self,
+        *,
+        capability: str,
+        backend: str,
+        method: str | None = None,
+    ) -> None:
+        self.capability = capability
+        self.backend = backend
+        self.method = method
+        suffix = f" (call: {method!r})" if method else ""
+        super().__init__(
+            f"Backend {backend!r} does not support capability {capability!r}" + suffix
+        )
+
+    def to_envelope(self) -> dict:
+        """Wire shape for transport layers.
+
+        Matches WDN-396 / OSS-6 standard envelope: ``{"error": {...}}`` with the
+        ``unsupported`` code (registered as ``ErrorCode.FORBIDDEN`` at the
+        transport edge — callers map this to a 403). Carrying ``backend`` and
+        ``capability`` in ``details`` lets clients branch on the missing flag
+        rather than parsing prose.
+        """
+        return {
+            "code": "unsupported",
+            "message": (
+                f"Backend {self.backend!r} does not support {self.capability!r}"
+            ),
+            "details": {
+                "backend": self.backend,
+                "capability": self.capability,
+                **({"method": self.method} if self.method else {}),
+            },
+        }
+
+
+def require_capability(
+    backend: "BookmarkBackend",
+    capability: str,
+    *,
+    method: str | None = None,
+) -> None:
+    """Raise :class:`UnsupportedCapability` if the backend lacks the named flag.
+
+    Call this as the first line of any code path that touches a
+    capability-gated method (semantic search, paged search, native usage
+    metering, native subscription storage). The guard is cheap (one attribute
+    read) so prefer it over `hasattr` checks or try/except AttributeError.
+
+    Example::
+
+        require_capability(db, "semantic_search", method="semantic_search_bookmarks")
+        rows = await db.get_all_embeddings(model)
+
+    The ``method`` argument is purely for diagnostics; it surfaces in the
+    error message + ``UnsupportedCapability.to_envelope()['details']``.
+    """
+    caps = getattr(backend, "capabilities", None)
+    if caps is None:
+        # Object that doesn't conform to the protocol — fail loudly.
+        raise UnsupportedCapability(
+            capability=capability,
+            backend=type(backend).__name__,
+            method=method,
+        )
+    flag = getattr(caps, capability, False)
+    if not flag:
+        raise UnsupportedCapability(
+            capability=capability,
+            backend=_backend_name(backend),
+            method=method,
+        )
+
+
+def _backend_name(backend: "BookmarkBackend") -> str:
+    """Map a backend instance to the short identifier used in error envelopes."""
+    cls = type(backend).__name__
+    if cls == "Database":
+        return "sqlite"
+    if cls == "DynamoDBDatabase":
+        return "dynamodb"
+    return cls.lower()
+
+
+def backend_capabilities_payload(backend: "BookmarkBackend") -> dict:
+    """Wire shape for ``GET /api/capabilities`` and the MCP equivalent.
+
+    Returns ``{"backend": "<name>", "capabilities": {<flag>: <bool>, ...}}``.
+    The dict is built from ``dataclasses.fields`` so it stays in sync with
+    :class:`BackendCapabilities` automatically.
+    """
+    import dataclasses
+
+    caps = backend.capabilities
+    return {
+        "backend": _backend_name(backend),
+        "capabilities": {
+            field.name: getattr(caps, field.name)
+            for field in dataclasses.fields(caps)
+        },
+    }
+
+
 __all__ = [
     "BackendCapabilities",
     "BookmarkBackend",
     "DYNAMODB_CAPABILITIES",
     "SQLITE_CAPABILITIES",
+    "UnsupportedCapability",
+    "backend_capabilities_payload",
+    "require_capability",
 ]

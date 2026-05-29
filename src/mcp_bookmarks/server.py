@@ -20,6 +20,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Context
 
+from .backend import UnsupportedCapability, require_capability
 from .db import Database, DEFAULT_DB_PATH
 from .db import _coerce_sqlite_bookmark_id
 from .scraper import extract_og_metadata, extract_article_content
@@ -480,7 +481,7 @@ async def search_bookmarks(
     if (qb := await _mcp_quota_block()):
         return qb
     db = _get_db(ctx)
-    if hasattr(db, "search_bookmarks_paged"):
+    if db.capabilities.paged_search:
         bookmarks, next_cursor = await db.search_bookmarks_paged(
             query=query, tag=tag, limit=limit, cursor=cursor
         )
@@ -769,16 +770,13 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
 
     Stores vectors in local SQLite for semantic_search_bookmarks. Not available in DYNAMODB_MODE.
     """
-    if os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes"):
-        return json.dumps(
-            {
-                "error": "index_bookmark_embedding is SQLite-only. Use search_bookmarks / read_bookmark in DynamoDB mode.",
-            },
-            ensure_ascii=False,
-        )
     if (qb := await _mcp_quota_block()):
         return qb
     db = _get_db(ctx)
+    try:
+        require_capability(db, "semantic_search", method="index_bookmark_embedding")
+    except UnsupportedCapability as exc:
+        return json.dumps({"error": exc.to_envelope()}, ensure_ascii=False)
     bookmark = await db.get_bookmark_by_id(bookmark_id)
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"}, ensure_ascii=False)
@@ -807,16 +805,13 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
 @mcp.tool()
 async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = None) -> str:
     """Vector search over indexed bookmarks (SQLite + OpenAI embeddings only)."""
-    if os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes"):
-        return json.dumps(
-            {
-                "error": "semantic_search_bookmarks is SQLite-only. Use search_bookmarks in DynamoDB mode.",
-            },
-            ensure_ascii=False,
-        )
     if (qb := await _mcp_quota_block()):
         return qb
     db = _get_db(ctx)
+    try:
+        require_capability(db, "semantic_search", method="semantic_search_bookmarks")
+    except UnsupportedCapability as exc:
+        return json.dumps({"error": exc.to_envelope()}, ensure_ascii=False)
     from .rag import cosine_similarity, embed_model, embed_texts
 
     try:
