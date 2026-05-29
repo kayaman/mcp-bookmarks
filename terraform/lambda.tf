@@ -84,14 +84,19 @@ resource "aws_iam_role_policy" "lambda_processor" {
         Resource = aws_sqs_queue.dlq.arn
       },
       {
+        # The log group is pre-created above (see aws_cloudwatch_log_group.lambda_processor)
+        # so we drop logs:CreateLogGroup and scope the remaining actions to this
+        # specific log group and its streams. No region/account wildcards.
         Sid    = "Logs"
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:*:*:*"
+        Resource = [
+          aws_cloudwatch_log_group.lambda_processor[0].arn,
+          "${aws_cloudwatch_log_group.lambda_processor[0].arn}:*",
+        ]
       }
     ]
   })
