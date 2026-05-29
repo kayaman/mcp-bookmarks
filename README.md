@@ -1,198 +1,144 @@
 # mcp-bookmarks
 
-An MCP (Model Context Protocol) server for intelligent bookmark management. Save URLs, extract Open Graph metadata and full article content, and build a curated tag taxonomy where the LLM acts as the decision engine for tag reuse.
+**Bookmark intelligence platform with MCP + REST + dual-backend cloud architecture.**
 
-Supports two storage backends:
-- **SQLite** (default) — local `~/.mcp-bookmarks/bookmarks.db`
-- **DynamoDB** (`DYNAMODB_MODE=true`) — connects to AWS DynamoDB tables (default names: `mcp-bookmarks-links`, `mcp-bookmarks-tags`), shareable with any compatible external store via table-name overrides
+Save URLs, extract Open Graph + full article text, and build a curated tag taxonomy where the LLM decides tag reuse. The same server speaks **MCP** (Claude Desktop, Claude Code, Cursor, ChatGPT custom connectors) and **REST** (`/api/*`), backed by **SQLite** for local-only use or **DynamoDB** for multi-tenant cloud deployments.
 
-## Product direction
-
-This repo is positioned as a **hybrid** product: **bookmark-native RAG and capture** (MCP + REST) is the primary wedge; generic "upload any corpus" RAG-as-a-service is **out of scope** until an optional HTTP retrieve API is built on top of the same auth/usage stack. Semantic search is **full-featured in SQLite**; **DynamoDB mode** still uses keyword search for retrieval until a cloud vector pipeline exists.
-
-| Document | Purpose |
-|----------|---------|
-| [`docs/product-positioning.md`](docs/product-positioning.md) | Vertical vs horizontal boundary (decision record) |
-| [`docs/production-readiness.md`](docs/production-readiness.md) | What is wired (auth, quotas, Stripe) and what to verify in production |
-| [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md) | Chunking, embedding model, vector store options for DynamoDB-backed deployments |
+| | |
+|---|---|
+| **Who it's for** | Developers, agents, teams that want one curated link store wired into MCP clients |
+| **Where it runs** | Laptop (SQLite, single binary) → Self-hosted container → AWS ECS Fargate (Terraform) |
+| **What's in the box** | MCP server · REST API · SQLite + DynamoDB backends · Tag taxonomy · Auth/quotas/Stripe webhook · Terraform infra |
+| **Status** | v0.11.2 · Core surface stable · See [Production-ready vs experimental](#production-ready-vs-experimental) |
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│  Claude / MCP Client                                          │
-│                                                               │
-│  "Save https://example.com/article"                           │
-│    1. save_bookmark(url)      → extract OG metadata           │
-│    2. extract_content(id)     → full article via trafilatura  │
-│    3. get_tags()              → read existing taxonomy        │
-│    4. create_tag()            → only if truly new concept     │
-│    5. tag_bookmark(id, [...]) → assign tags                   │
-│    6. set_summary(id, text)   → store AI summary              │
-│                                                               │
-│  Prompts:                                                     │
-│    save_and_tag(url)          → full pipeline in one shot     │
-│    bulk_save(urls)            → batch processing              │
-│    curate_tags()              → taxonomy audit                │
-│    knowledge_query(question)  → RAG over your bookmarks       │
-│                                                               │
-│  Resources:                                                   │
-│    bookmarks://taxonomy       → full tag list as context      │
-│    bookmarks://recent/{n}     → last N bookmarks              │
-└──────────────┬────────────────────────────────────────────────┘
-               │ SSE (http://localhost:8000/sse)
-               ▼
-┌───────────────────────────────────────────────────────────────┐
-│  MCP Bookmarks Server (FastMCP + SSE + REST API)              │
-│                                                               │
-│  server.py    → MCP tools, prompts, resources                   │
-│  api.py       → REST: /api/save, /api/usage, …                │
-│  scraper.py   → OG extraction + trafilatura article parsing   │
-│  models.py    → Pydantic: OGMetadata, ArticleContent, Tag …  │
-│  db.py        → aiosqlite SQLite backend                      │
-│  dynamodb.py  → boto3 DynamoDB backend (DYNAMODB_MODE=true)   │
-└──────────────┬────────────────────────────────────────────────┘
-               │
-       ┌───────┴───────┐
-       ▼               ▼
-  SQLite           DynamoDB
-  (default)        (mcp-bookmarks-links
-                    mcp-bookmarks-tags)
+```mermaid
+flowchart TB
+  subgraph clients[MCP clients]
+    CC[Claude Code / Desktop]
+    CUR[Cursor]
+    CGP[ChatGPT connector]
+  end
+  subgraph server[mcp-bookmarks server]
+    direction LR
+    SSE["/sse · Streamable /mcp"]
+    REST["/api/* REST"]
+    DOMAIN["Tools · prompts · resources<br/>Tag taxonomy · auth · quotas"]
+    BACKEND[Backend abstraction]
+    SSE --> DOMAIN
+    REST --> DOMAIN
+    DOMAIN --> BACKEND
+  end
+  subgraph storage[Storage]
+    L[(SQLite<br/>~/.mcp-bookmarks/bookmarks.db)]
+    D[(DynamoDB<br/>links · tags · usage · subscriptions)]
+  end
+  CC --> SSE
+  CUR --> SSE
+  CGP --> REST
+  BACKEND --> L
+  BACKEND --> D
 ```
 
-## Setup
+Same 19 tools, 4 prompts, 2 resources across both transports. Switch backends with `DYNAMODB_MODE=true`. Same `BookmarkBackend` contract; capability differences (e.g. embeddings) are explicit, not hidden.
+
+## Quick start
 
 ```bash
-# Option A: uv (recommended)
+# Install
 uv sync
 
-# Option B: pip
-pip install -e .
-```
-
-## Running
-
-### SQLite mode (default)
-
-```bash
-# Default: http://0.0.0.0:8000
+# Run (SQLite, ~/.mcp-bookmarks/bookmarks.db)
 uv run mcp-bookmarks
-
-# Custom config
-MCP_PORT=9000 MCP_HOST=127.0.0.1 uv run mcp-bookmarks
-
-# Custom DB location
-BOOKMARKS_DB_PATH=/path/to/bookmarks.db uv run mcp-bookmarks
+# → http://0.0.0.0:8000/sse   (SSE — Claude Code, Cursor)
+# → http://0.0.0.0:8000/mcp   (Streamable HTTP — ChatGPT)
+# → http://0.0.0.0:8000/api/  (REST)
 ```
 
-### DynamoDB mode
+### Connect a client
 
 ```bash
-DYNAMODB_MODE=true \
-AWS_DEFAULT_REGION=us-east-1 \
-uv run mcp-bookmarks
-```
-
-`save_bookmark` returns a **`bookmark_id`**: UUID string in DynamoDB mode, integer in SQLite. Use that id with `extract_content`, `set_bookmark_body`, `tag_bookmark`, and `set_summary`.
-
-Writes use the canonical camelCase schema: `aiContent`, `aiWordCount`, `aiSummary`, `aiTags`, `aiProcessedAt`. An external enrichment Lambda may still process items asynchronously; the MCP can also persist text and tags directly without waiting for one.
-
-**`set_bookmark_body(bookmark_id, text)`** — use when another MCP (e.g. Bright Data, Tavily) already returned the page text; avoids a second HTTP fetch from this server.
-
-### Podman Container
-
-```bash
-podman build -t mcp-bookmarks .
-podman compose up -d
-```
-
-## Connecting Clients
-
-Two transports are exposed on the same server port:
-
-| Transport | Path | Clients |
-|---|---|---|
-| **SSE** | `/sse` | Claude Desktop, Claude Code CLI, Cursor IDE, mcp-remote |
-| **Streamable HTTP** | `/mcp` | ChatGPT custom connectors, HTTP-native MCP clients |
-
-### Claude Desktop (`claude_desktop_config.json`)
-
-```json
-{
-  "mcpServers": {
-    "bookmarks": {
-      "type": "sse",
-      "url": "http://localhost:8000/sse"
-    }
-  }
-}
-```
-
-### Claude Code
-
-```bash
+# Claude Code
 claude mcp add --transport sse bookmarks http://localhost:8000/sse
+
+# Cursor — .cursor/mcp.json
+{ "mcpServers": { "bookmarks": { "type": "sse", "url": "http://localhost:8000/sse" } } }
+
+# ChatGPT — Settings → Connectors → Custom → http://localhost:8000/mcp
 ```
 
-### Cursor (`.cursor/mcp.json`)
+Full per-client guides: [docs/demo/](docs/demo/).
 
-```json
-{
-  "mcpServers": {
-    "bookmarks": {
-      "type": "sse",
-      "url": "http://localhost:8000/sse"
-    }
-  }
-}
+## Deployment
+
+```mermaid
+flowchart LR
+  subgraph local[Local laptop]
+    L[uv run mcp-bookmarks<br/>SQLite]
+  end
+  subgraph self[Self-hosted container]
+    C[podman compose up<br/>SQLite volume]
+  end
+  subgraph cloud[AWS · Terraform]
+    direction TB
+    R[Route53] --> A[ALB · ACM TLS]
+    A --> F[ECS Fargate<br/>mcp-bookmarks]
+    F --> D[(DynamoDB)]
+    F --> S[Secrets Manager<br/>MCP_API_KEYS]
+  end
 ```
 
-### ChatGPT Custom Connector (Streamable HTTP)
+| Mode | Command | Use when |
+|---|---|---|
+| **Local SQLite** | `uv run mcp-bookmarks` | Single user, local dev, fastest path |
+| **Container** | `podman compose up -d` | Self-hosted, single instance |
+| **AWS Fargate** | `cd terraform && terraform apply -var='mcp_hostname=...' -var='enable_alb=true' -var='ecs_desired_count=1'` | Multi-user, hosted, with auth + quotas |
 
-Settings → Connectors → Custom → URL: `http://localhost:8000/mcp`
+The Terraform stack provisions VPC, ECS Fargate, ALB+ACM, DynamoDB (links/tags/usage/subscriptions), RDS (pgvector-ready, optional), Secrets Manager, IAM, and budget alarms. See [`terraform/README.md`](terraform/README.md).
 
-ChatGPT requires the Streamable HTTP transport (`/mcp`). The SSE endpoint (`/sse`) will not connect from ChatGPT.
+## Demo flow (5 minutes)
 
-### MCP Inspector (debugging)
-
-```bash
-uv run mcp-bookmarks &
-npx -y @modelcontextprotocol/inspector
-# Connect to http://localhost:8000/sse
-# Or http://localhost:8000/mcp for Streamable HTTP
+```
+1. save_bookmark("https://martinfowler.com/articles/2025-llm-agent.html")
+   → bookmark_id (UUID in DynamoDB, int in SQLite)
+2. Read resource bookmarks://taxonomy
+   → tag list with descriptions + usage counts
+3. Prompt save_and_tag(url)
+   → extract → tag → summarize, one shot
+4. search_bookmarks(query="agents")
+   → new item appears
+5. read_bookmark(<id>)
+   → confirm aiContent, aiSummary, aiTags written
 ```
 
-### O’Reilly + Bright Data + bookmarks (multi-MCP)
+Per-client variants: [Claude Code](docs/demo/claude-code.md) · [Cursor](docs/demo/cursor.md) · [ChatGPT](docs/demo/chatgpt.md).
 
-Integration is **three MCP servers in the client** (not bundled into this repo). Step-by-step (PT): **[`docs/integracao-mcp-oreilly-brightdata.md`](docs/integracao-mcp-oreilly-brightdata.md)**. Copy **[`.cursor/mcp.json.example`](.cursor/mcp.json.example)** → **`.cursor/mcp.json`** and replace `YOUR_OREILLY_MCP_TOKEN` and Bright Data token (`.cursor/mcp.json` is **gitignored**). O’Reilly official endpoint: `https://api.oreilly.com/api/content-discovery/v1/mcp/` + Bearer token ([docs](https://learning.oreilly.com/apidocs/mcp/content)). Cursor agents also load project rule **[`.cursor/rules/oreilly-mcp-agents.mdc`](.cursor/rules/oreilly-mcp-agents.mdc)** to prefer `search-oreilly-content` when relevant.
+## Production-ready vs experimental
 
-**Typical web flow:** `save_bookmark(url)` → Bright Data `scrape_as_markdown` (or search) → `set_bookmark_body(bookmark_id, text)` → `get_tags` / `tag_bookmark` / `set_summary`.
+| Feature | Status | Notes |
+|---|---|---|
+| MCP server (SSE + Streamable HTTP) | ✅ Production | 19 tools, 4 prompts, 2 resources; transport-agnostic |
+| REST API (`/api/*`) | ✅ Production | Auth via `MCP_API_KEYS`; per-tenant routing via `key:org` |
+| SQLite backend | ✅ Production | Full tools incl. embeddings + semantic search |
+| DynamoDB backend | ✅ Production | Keyword search only; vector pipeline is design-stage |
+| Tag taxonomy + LLM dedup | ✅ Production | The product wedge — see [Tag deduplication strategy](#tag-deduplication-strategy) |
+| Auth + quotas + Stripe webhook | ✅ Production | Hooks + storage; not a full SaaS entitlement engine |
+| Terraform AWS deploy | ✅ Production | ECS Fargate + ALB + DynamoDB; see [`terraform/`](terraform/) |
+| **AI Gateway ensemble + judge** | 🧪 Experimental | `ENSEMBLE_ENABLED=true`; N+1 cost; see [`docs/ai-gateway-ensemble.md`](docs/ai-gateway-ensemble.md) |
+| **`/ai-gateway` browser panel** | 🧪 Experimental | Browser harness for the ensemble tool |
+| **O'Reilly + Bright Data multi-MCP** | 🧪 Experimental | Compose three MCPs in the client; see [`docs/integracao-mcp-oreilly-brightdata.md`](docs/integracao-mcp-oreilly-brightdata.md) |
+| **Rust topic-compiler** | 🧪 Experimental | sage-wiki-style topic articles from corpus; see [`docs/knowledge-extraction-pipeline.md`](docs/knowledge-extraction-pipeline.md) |
+| **DynamoDB vector pipeline** | 📋 Design only | Chunking + embedding + ANN; see [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md) |
+| **Sample enrichment Lambda** | 🧪 Experimental | Processor template in `lambda/`; align schema before pointing at prod |
+| **Multicloud** | 📋 Notes only | See [`docs/multicloud.md`](docs/multicloud.md) |
+| **Slidev presentation** | 🧪 Asset | Pitch deck under [`presentation/`](presentation/) |
+| **React dashboard snippet** | 🧪 Asset | UI snippet under [`dashboard/`](dashboard/) |
 
-### Fetch / search MCPs (Bright Data, Tavily)
+## Tools, prompts, resources
 
-See also **[`docs/mcp-fetch-integrations.md`](docs/mcp-fetch-integrations.md)** for Tavily and Bright Data JSON snippets. O’Reilly-only prompts and compliance: **[`docs/oreilly-mcp.md`](docs/oreilly-mcp.md)**.
-
-### AWS (Terraform)
-
-Infrastructure-as-code for DynamoDB (links, tags, **usage events**, **subscriptions**), RDS (pgvector-ready), Lambda, ECS, optional **ALB** (`enable_alb`), budgets, and cost tags lives in [`terraform/`](terraform/). Outputs include `alb_dns_name` when the load balancer is enabled. Stripe targets `POST /webhooks/stripe` on the same host as the MCP server.
-
-### REST: auth, usage, billing hook
-
-- **`MCP_API_KEYS`** — When set, `/api/*` requires `Authorization: Bearer <key>` or `X-API-Key`. Keys may map to tenants as `key:org-id` (see [`auth.py`](src/mcp_bookmarks/auth.py)).
-- **`GET /api/usage`** — Monthly event count for the authenticated tenant (SQLite `usage_events`; pair with `MCP_MONTHLY_USAGE_LIMIT` for quotas).
-- **`POST /webhooks/stripe`** — Configure in Stripe with **`STRIPE_WEBHOOK_SECRET`**; subscription snapshots go to SQLite and/or **`DYNAMODB_SUBSCRIPTIONS_TABLE`**.
-
-### Semantic search (SQLite + OpenAI)
-
-With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_bookmark_embedding`** after **`extract_content`**, then **`semantic_search_bookmarks`**. Vectors live in the local DB table `bookmark_embeddings`. For **DynamoDB-backed deployments**, semantic index design (chunking, vector store) is specified in [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md)—not yet implemented in code.
-
-### Deploying this package (per release)
-
-1. Bump `version` in [`pyproject.toml`](pyproject.toml) (semver).
-2. **MCP server** used by Cursor/Claude: rebuild/restart whatever runs `uv run mcp-bookmarks` (or your container image) so workers pick up the new code.
-3. **Optional Lambda** in [`terraform/`](terraform/): run `terraform/scripts/package-lambda.sh`, then `terraform apply` if you manage the processor with this repo.
-
-## Tools
+<details>
+<summary><b>Tools</b> — 19 functions exposed via MCP</summary>
 
 | Tool | Description |
 |---|---|
@@ -212,17 +158,14 @@ With **`OPENAI_API_KEY`** and **SQLite** mode (not DynamoDB): call **`index_book
 | `delete_tag(slug)` | Delete a tag from all bookmarks |
 | `merge_tags(source, target)` | Merge duplicate tags |
 | `export_bookmarks(format?, tag?)` | Export as JSON, Markdown, or OPML |
-| `index_bookmark_embedding(bookmark_id)` | SQLite only: OpenAI embedding for title+description+content |
-| `semantic_search_bookmarks(query, limit?)` | SQLite only: cosine similarity over stored embeddings |
-| `ensemble_with_judge(task, models?, judge_model?)` | Optional: N models in parallel via OpenAI-compatible **AI Gateway**, then LLM judge merges/picks best (`ENSEMBLE_ENABLED=true`) |
+| `index_bookmark_embedding(bookmark_id)` | SQLite only · OpenAI embedding for title+description+content |
+| `semantic_search_bookmarks(query, limit?)` | SQLite only · cosine similarity over stored embeddings |
+| `ensemble_with_judge(task, models?, judge_model?)` | 🧪 Experimental · N models via OpenAI-compatible gateway, LLM judge picks best |
 
-### AI Gateway: vários modelos + juiz LLM
+</details>
 
-Aponta `AI_GATEWAY_BASE_URL` (ou `OPENAI_BASE_URL`) para o teu gateway **compatível com OpenAI** (`…/v1/chat/completions`). Define `ENSEMBLE_ENABLED=true`, chave em `AI_GATEWAY_API_KEY` ou `OPENAI_API_KEY`, e `ENSEMBLE_MODELS` (lista separada por vírgulas). O MCP tool **`ensemble_with_judge`** e **`POST /api/ensemble`** (`{"task":"...","models":["a","b"],"judge_model":"..."}`) fazem N chamadas em paralelo e uma chamada de **juiz** (`JUDGE_MODEL`, default `gpt-4o-mini`) que devolve JSON com `answer`, `rationale`, `chosen_index`. Custo: **N+1** chamadas; usa também o medidor de quota se estiver ativo.
-
-**Painel web:** com o servidor a correr, abre **`/ai-gateway`** (ex.: `http://localhost:8000/ai-gateway`) para testar o ensemble no browser; **`GET /api/ai-gateway/status`** expõe só metadados seguros (sem chaves). Se **`MCP_API_KEYS`** estiver definido, usa o mesmo `Bearer` ou `X-API-Key` que nos outros endpoints (o painel pode guardar a chave REST em `sessionStorage` neste separador). Ver [`docs/ai-gateway-ensemble.md`](docs/ai-gateway-ensemble.md).
-
-## Prompts
+<details>
+<summary><b>Prompts</b> — 4 multi-step pipelines</summary>
 
 | Prompt | Args | Description |
 |---|---|---|
@@ -231,14 +174,19 @@ Aponta `AI_GATEWAY_BASE_URL` (ou `OPENAI_BASE_URL`) para o teu gateway **compat�
 | `curate_tags` | — | Audit taxonomy for duplicates, gaps, weak descriptions |
 | `knowledge_query` | `question` | RAG: search bookmarks and synthesize an answer |
 
-## Resources
+</details>
+
+<details>
+<summary><b>Resources</b> — 2 read-only context channels</summary>
 
 | URI | Description |
 |---|---|
 | `bookmarks://taxonomy` | Full tag list with descriptions — ideal pre-context for tagging |
 | `bookmarks://recent/{count}` | Last N bookmarks with tags and summaries |
 
-## Tag Deduplication Strategy
+</details>
+
+## Tag deduplication strategy
 
 Instead of rules, the LLM reads the full taxonomy and **semantically decides** tag reuse. Each tag carries a scoped description:
 
@@ -251,9 +199,12 @@ Instead of rules, the LLM reads the full taxonomy and **semantically decides** t
 }
 ```
 
-This prevents `ml`, `ML-algorithms`, `machine_learning` from proliferating.
+This prevents `ml`, `ML-algorithms`, `machine_learning` from proliferating across saves.
 
-## Environment Variables
+## Configuration
+
+<details>
+<summary><b>Environment variables</b></summary>
 
 | Variable | Default | Description |
 |---|---|---|
@@ -269,39 +220,85 @@ This prevents `ml`, `ML-algorithms`, `machine_learning` from proliferating.
 | `DYNAMODB_SUBSCRIPTIONS_TABLE` | — | Stripe subscription rows (webhook) |
 | `MCP_API_KEYS` | — | Comma-separated REST API keys (`key` or `key:org`) |
 | `MCP_MONTHLY_USAGE_LIMIT` | `0` | Monthly quota (0 = off); enforced on MCP tools + REST save |
+| `MCP_BEARER_AUTH` | `false` | Enforce bearer auth on `/mcp`, `/sse`, `/messages` |
+| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` / `COGNITO_REGION` | — | Validate JWTs from a first-party Cognito user pool |
+| `MCP_CONNECTIONS_TABLE` | `mcp-bookmarks-connections` | DynamoDB table for `bm_v1_*` scoped tokens |
 | `STRIPE_WEBHOOK_SECRET` | — | `whsec_...` for `/webhooks/stripe` |
 | `OPENAI_API_KEY` | — | Embeddings for semantic search tools |
 | `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding model id |
-| `ENSEMBLE_ENABLED` | `false` | `true` to allow `ensemble_with_judge` + `POST /api/ensemble` |
-| `AI_GATEWAY_BASE_URL` | — | Gateway OpenAI-compatible (e.g. `https://api.openai.com/v1`) |
-| `AI_GATEWAY_API_KEY` | — | Overrides `OPENAI_API_KEY` for ensemble calls if set |
-| `ENSEMBLE_MODELS` | — | Default comma-separated models when the tool omits `models` |
-| `JUDGE_MODEL` | `gpt-4o-mini` | Model that scores/merges candidate answers |
+| `ENSEMBLE_ENABLED` | `false` | 🧪 Allow `ensemble_with_judge` + `POST /api/ensemble` |
+| `AI_GATEWAY_BASE_URL` | — | 🧪 Gateway OpenAI-compatible (e.g. `https://api.openai.com/v1`) |
+| `AI_GATEWAY_API_KEY` | — | 🧪 Overrides `OPENAI_API_KEY` for ensemble calls if set |
+| `ENSEMBLE_MODELS` | — | 🧪 Default comma-separated models when the tool omits `models` |
+| `JUDGE_MODEL` | `gpt-4o-mini` | 🧪 Model that scores/merges candidate answers |
 | `AWS_DEFAULT_REGION` | `us-east-1` | AWS region for DynamoDB |
 
-## Project Structure
+</details>
+
+## Extensions & experiments
+
+These are real but call them out explicitly so they don't dilute the core pitch.
+
+**AI Gateway ensemble + LLM judge** — Run N models via an OpenAI-compatible gateway and a judge model picks/merges. Tool: `ensemble_with_judge`, REST: `POST /api/ensemble`, browser harness at `/ai-gateway`. Enable with `ENSEMBLE_ENABLED=true`. Cost: N+1 model calls per invocation. See [`docs/ai-gateway-ensemble.md`](docs/ai-gateway-ensemble.md).
+
+**O'Reilly + Bright Data multi-MCP composition** — Three MCPs in the client: bookmarks for storage, Bright Data for hard-to-fetch URLs, O'Reilly for first-party content. Walk-through (PT): [`docs/integracao-mcp-oreilly-brightdata.md`](docs/integracao-mcp-oreilly-brightdata.md). Compliance notes (EN): [`docs/oreilly-mcp.md`](docs/oreilly-mcp.md). Generic fetch MCPs: [`docs/mcp-fetch-integrations.md`](docs/mcp-fetch-integrations.md).
+
+**Rust topic-compiler** — Standalone binary in [`rust/topic-compiler/`](rust/topic-compiler/) that turns the bookmark corpus into a sage-wiki-style Markdown collection (one article per topic, interlinked, with typed ontology edges). Source: SQLite or DynamoDB. See [`docs/knowledge-extraction-pipeline.md`](docs/knowledge-extraction-pipeline.md) and [`docs/topic-article-pipeline.md`](docs/topic-article-pipeline.md).
+
+**DynamoDB vector pipeline (design only)** — Chunking, embedding model versioning, vector store (pgvector / OpenSearch k-NN) — written up in [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md); not implemented yet.
+
+**Sample enrichment Lambda** — `lambda/handler.py` + `lambda/template.yaml`. Aligns with the canonical camelCase schema (`aiContent`, `aiSummary`, …). Use as a template if you wire your own enrichment loop.
+
+**Multicloud notes** — Forward-looking sketch in [`docs/multicloud.md`](docs/multicloud.md); AWS is the only path with infra-as-code today.
+
+**Slidev presentation** — Pitch deck in [`presentation/`](presentation/). `npm run dev` to serve, `npm run build` to export.
+
+**React dashboard snippet** — `dashboard/bookmark-dashboard.jsx`. Single-file demo of consuming the REST API; not wired into a build.
+
+## Repository layout
 
 ```
 mcp-bookmarks/
-├── pyproject.toml           # Dependencies (includes boto3) and entrypoint
-├── compose.yaml             # Podman/Docker compose
-├── Containerfile            # Multi-stage container build
-├── presentation/            # Slidev deck (`npm run dev` — see presentation/README.md)
-├── docs/
-│   ├── product-positioning.md   # Product boundary (vertical-first hybrid)
-│   ├── production-readiness.md  # Auth, billing, quotas, RAG deployment notes
-│   └── dynamodb-rag-design.md # Cloud vector pipeline (future implementation)
-├── tests/
-│   ├── test_smoke.py        # Core DB operations
-│   ├── test_api.py          # REST API
-│   ├── test_e2e_sse.py      # Full SSE + MCP protocol
-│   └── test_management.py   # Tag management (merge, delete, update)
-└── src/mcp_bookmarks/
-    ├── models.py            # Pydantic: OGMetadata, ArticleContent, Tag, Bookmark
-    ├── db.py                # SQLite backend (aiosqlite, auto-migration)
-    ├── dynamodb.py          # DynamoDB backend (boto3, DYNAMODB_MODE=true)
-    ├── scraper.py           # httpx + BS4 + trafilatura
-    ├── api.py               # REST routes
-    ├── cli.py               # Terminal client
-    └── server.py            # FastMCP: 14 tools, 4 prompts, 2 resources
+├── src/mcp_bookmarks/        # ── Core: MCP + REST server, backends, taxonomy
+│   ├── server.py             #    FastMCP: 19 tools, 4 prompts, 2 resources
+│   ├── api.py                #    REST: /api/save, /api/usage, /webhooks/stripe
+│   ├── bearer_auth.py        #    Cognito JWT + bm_v1_* scoped tokens
+│   ├── db.py                 #    SQLite backend (aiosqlite, auto-migration)
+│   ├── dynamodb.py           #    DynamoDB backend (boto3, DYNAMODB_MODE=true)
+│   ├── scraper.py            #    httpx + BS4 + trafilatura
+│   ├── models.py             #    Pydantic: OGMetadata, ArticleContent, Tag, Bookmark
+│   └── cli.py                #    Terminal client
+├── tests/                    # ── pytest (57 passing)
+├── terraform/                # ── Core: AWS infra (VPC, ECS, ALB, DynamoDB, RDS, Secrets, IAM, budgets)
+├── lambda/                   # 🧪 Sample enrichment Lambda
+├── rust/topic-compiler/      # 🧪 Knowledge-extraction binary
+├── docs/                     # ── Design + runbook + demo docs
+│   ├── product-positioning.md
+│   ├── production-readiness.md
+│   ├── production-smoke.md
+│   ├── dynamodb-rag-design.md
+│   ├── knowledge-extraction-pipeline.md
+│   ├── topic-article-pipeline.md
+│   ├── ai-gateway-ensemble.md
+│   ├── mcp-fetch-integrations.md
+│   ├── oreilly-mcp.md
+│   ├── integracao-mcp-oreilly-brightdata.md
+│   ├── infra-disposable-runbook.md
+│   ├── multicloud.md
+│   └── demo/                 #    Per-client connection guides
+├── presentation/             # 🧪 Slidev deck
+└── dashboard/                # 🧪 React snippet
 ```
+
+## Documentation index
+
+- **Product positioning** — [`docs/product-positioning.md`](docs/product-positioning.md): vertical-first hybrid boundary
+- **Production readiness** — [`docs/production-readiness.md`](docs/production-readiness.md): what's wired, what to verify
+- **Production smoke** — [`docs/production-smoke.md`](docs/production-smoke.md): HTTPS auth gate, SSE/Streamable checks, E2E DynamoDB validation
+- **DynamoDB vector design** — [`docs/dynamodb-rag-design.md`](docs/dynamodb-rag-design.md): chunking, embedding model, vector store options
+- **Infra runbook** — [`docs/infra-disposable-runbook.md`](docs/infra-disposable-runbook.md): tear-down + re-apply checklist
+- **Demo guides** — [`docs/demo/`](docs/demo/): Claude Code, Cursor, ChatGPT
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
