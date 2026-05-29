@@ -1,7 +1,6 @@
 """Conformance: both concrete backends satisfy the BookmarkBackend protocol.
 
-Phase 1 of WDN-393 (OSS-3). When WDN-395 (test layout split) merges, this
-file moves to tests/unit/test_backend_protocol.py.
+Phase 1 of WDN-393 (OSS-3).
 
 ``Protocol`` with ``@runtime_checkable`` only verifies attribute *presence*
 at runtime, not signature compatibility. Real signature drift will surface
@@ -11,12 +10,8 @@ a method or capability attribute from one backend.
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from mcp_bookmarks.backend import (
     DYNAMODB_CAPABILITIES,
