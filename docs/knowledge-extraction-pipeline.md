@@ -4,14 +4,14 @@ Status: v0.1 scaffolding on `claude/knowledge-extraction-pipeline-KCgFV`
 
 Related repos:
 - `kayaman/mcp-bookmarks` — this Rust compiler (below)
-- `kayaman/blogmarks` — `wiki/` Astro content collection + site
+- A companion site repo — `wiki/` Astro content collection + site (not in this repo)
 
 ## Goal
 
-Turn the `blogmarks-links` / SQLite bookmark corpus into a sage-wiki-style
+Turn the `mcp-bookmarks-links` / SQLite bookmark corpus into a sage-wiki-style
 knowledge base: one Markdown article per topic, interlinked via `[[wikilinks]]`,
 with typed ontology edges between topics. Published as an Astro content
-collection in the companion `blogmarks` repo.
+collection in a companion site repo.
 
 ## Design influences
 
@@ -28,7 +28,7 @@ Combines the strengths of two OSS tools:
 ## Pipeline
 
 ```
-  blogmarks-links           ~/.mcp-bookmarks/bookmarks.db
+  mcp-bookmarks-links       ~/.mcp-bookmarks/bookmarks.db
   (DynamoDB)                (SQLite)
         \                   /
          \                 /
@@ -64,12 +64,12 @@ cd rust/topic-compiler
 AWS_DEFAULT_REGION=us-east-1 \
   cargo run --release -- compile \
     --source dynamodb \
-    --out ../../../blogmarks/wiki/src/content/topics
+    --out ./out/topics
 
 # against the local SQLite bookmark DB
 cargo run --release -- compile \
   --source sqlite \
-  --out ../../../blogmarks/wiki/src/content/topics
+  --out ./out/topics
 ```
 
 ## Non-goals for v0.1

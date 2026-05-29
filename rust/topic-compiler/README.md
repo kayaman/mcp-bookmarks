@@ -13,13 +13,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 # against local SQLite (mcp-bookmarks default)
 cargo run --release -- compile \
   --source sqlite \
-  --out ../../../blogmarks/wiki/src/content/topics
+  --out ./out/topics
 
-# against the live blogmarks DynamoDB corpus
+# against a live DynamoDB corpus
 AWS_DEFAULT_REGION=us-east-1 \
   cargo run --release -- compile \
     --source dynamodb \
-    --out ../../../blogmarks/wiki/src/content/topics
+    --out ./out/topics
 ```
 
 ## Flags
@@ -37,5 +37,5 @@ AWS_DEFAULT_REGION=us-east-1 \
 - `ANTHROPIC_API_KEY` (required)
 - `ANTHROPIC_MODEL` (default: `claude-opus-4-6`)
 - `BOOKMARKS_DB_PATH` (for `--source sqlite`)
-- `DYNAMODB_LINKS_TABLE` (default: `blogmarks-links`)
+- `DYNAMODB_LINKS_TABLE` (default: `mcp-bookmarks-links`)
 - `AWS_*` (standard AWS SDK credentials)

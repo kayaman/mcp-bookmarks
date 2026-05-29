@@ -1,16 +1,15 @@
-"""Tests for the bidirectional schema bridge between mcp-bookmarks and the
-Blogmarks PWA (Phase 3 of the migration).
+"""Tests for the bidirectional schema bridge.
 
-The PWA reads camelCase fields (``ogTitle``, ``ogDescription``, ``ogImage``,
-``ogSiteName``, ``aiSummary``, ``aiTags``, ``aiContent``, ``aiWordCount``,
-``bookmarkType``, ``savedAt``); legacy mcp-bookmarks clients read snake_case
-(``description``, ``image_url``, ``site_name``, ``summary``, ``content``,
-``word_count``). This module verifies:
+The canonical wire shape is camelCase (``ogTitle``, ``ogDescription``,
+``ogImage``, ``ogSiteName``, ``aiSummary``, ``aiTags``, ``aiContent``,
+``aiWordCount``, ``bookmarkType``, ``savedAt``); legacy mcp-bookmarks
+clients read snake_case (``description``, ``image_url``, ``site_name``,
+``summary``, ``content``, ``word_count``). This module verifies:
 
 1. ``Bookmark`` model accepts EITHER naming convention as input.
 2. ``Bookmark.model_dump(by_alias=True)`` emits camelCase.
 3. ``_to_bookmark`` reads camelCase preferentially with snake_case fallback.
-4. ``upsert_bookmark`` writes camelCase keys to DDB so PWA reads see them.
+4. ``upsert_bookmark`` writes camelCase keys to DDB so subsequent reads see them.
 5. The tool serializers (``save_bookmark``, ``read_bookmark``,
    ``search_bookmarks``) include the camelCase fields in their JSON output.
 """
@@ -143,8 +142,8 @@ def test_to_bookmark_fallback_to_snakecase():
 
 
 def test_to_bookmark_surfaces_ownership_fields():
-    """Ownership + share metadata fields written by the blogmarks PWA roundtrip
-    cleanly through _to_bookmark and serialize back as camelCase."""
+    """Ownership + share metadata fields roundtrip cleanly through
+    _to_bookmark and serialize back as camelCase."""
     item = {
         "id": "abc",
         "url": "https://example.com",
@@ -179,8 +178,8 @@ def test_to_bookmark_surfaces_ownership_fields():
     assert dumped["notes"] == "private notes"
 
 
-def test_to_bookmark_handles_blogmarks_lambda_shape():
-    """A bookmark written by the legacy blogmarks Lambda surfaces with camelCase fields."""
+def test_to_bookmark_handles_camelcase_legacy_shape():
+    """A bookmark written by an external Lambda using camelCase keys surfaces correctly."""
     item = {
         "id": "abc",
         "url": "https://example.com",
@@ -197,7 +196,7 @@ def test_to_bookmark_handles_blogmarks_lambda_shape():
         "savedAt": "2026-05-06T00:00:00Z",
         "source": "web",
         "userId": "user-X",
-        "organization_id": "blogmarks",
+        "organization_id": "test-org",
     }
     b = _to_bookmark(item)
     assert b.og_title == "Article"
@@ -218,7 +217,7 @@ def test_to_bookmark_handles_blogmarks_lambda_shape():
 @pytest.mark.asyncio
 async def test_upsert_bookmark_writes_camelcase_keys():
     """The DDB item written by upsert_bookmark must have camelCase OG keys
-    (so a PWA read of the same item sees ogImage/ogDescription/...)."""
+    (so a subsequent read sees ogImage/ogDescription/...)."""
     from mcp_bookmarks.dynamodb import DynamoDBDatabase
 
     captured: dict = {}
@@ -265,7 +264,7 @@ async def test_upsert_bookmark_writes_camelcase_keys():
 
 
 def test_search_serializer_emits_camelcase_per_item():
-    """search_bookmarks per-item shape includes the camelCase fields the PWA needs."""
+    """search_bookmarks per-item shape includes the canonical camelCase fields."""
     b = Bookmark(
         url="https://x",
         title="T",
@@ -283,7 +282,7 @@ def test_search_serializer_emits_camelcase_per_item():
     item = b.model_dump(by_alias=True, exclude_none=True)
     item.setdefault("id", b.dynamo_id or b.id)
     item["has_content"] = b.content is not None
-    # The PWA's mcpBookmarkToFeedShape adapter expects all of these:
+    # External feed adapters expect all of these:
     for k in ("id", "url", "title", "ogImage", "ogDescription", "aiSummary",
               "aiTags", "aiWordCount", "bookmarkType", "savedAt", "source"):
         assert k in item, f"missing {k}"
@@ -292,7 +291,7 @@ def test_search_serializer_emits_camelcase_per_item():
 
 
 def test_read_serializer_emits_aicontent_alias():
-    """read_bookmark must emit both 'content' (legacy) and 'aiContent' (PWA)
+    """read_bookmark must emit both 'content' (legacy) and 'aiContent' (canonical)
     so the dual-shape contract holds for content too."""
     b = Bookmark(
         url="https://x",

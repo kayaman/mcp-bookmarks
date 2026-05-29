@@ -1,6 +1,6 @@
 # Production readiness audit
 
-Static audit of this repository (April 2026). **blogmarks.dev** (PWA, API, Cognito, Lambdas) lives in **another repo and deploy pipeline**; validate that stack separately.
+Static audit of this repository (April 2026). Any first-party browser/mobile client (PWA, API, Cognito user pool, enrichment Lambdas) typically lives in **another repo and deploy pipeline**; validate that stack separately.
 
 ## MCP server (`uv run mcp-bookmarks`)
 
@@ -19,7 +19,7 @@ Static audit of this repository (April 2026). **blogmarks.dev** (PWA, API, Cogni
 
 - **Billing:** Stripe webhook persists subscription snapshots; **plan → quota mapping** in application code is not a full SaaS entitlement engine—treat as **hooks + storage** unless you extend it.
 - **Terraform:** Describes optional AWS pieces (ALB, ECS, Lambda, RDS, DynamoDB). **Apply state** in your account determines what is actually live, not this doc.
-- **Lambda sample** in `terraform/`: README already warns schema may differ from production blogmarks unless aligned.
+- **Lambda sample** in `terraform/`: align item attributes with the canonical camelCase schema if you point it at an external production store.
 
 ## Recommended smoke checks
 

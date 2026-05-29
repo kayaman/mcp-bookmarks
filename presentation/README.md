@@ -1,6 +1,6 @@
 # mcp-bookmarks — Slidev deck
 
-Product story for **mcp-bookmarks** / Blogmarks MCP (bookmark-native knowledge for agents).
+Product story for **mcp-bookmarks** (bookmark-native knowledge for agents).
 
 ## Run
 

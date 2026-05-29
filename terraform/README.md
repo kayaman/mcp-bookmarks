@@ -1,4 +1,4 @@
-# Blogmarks / mcp-bookmarks — infraestrutura AWS (Terraform)
+# mcp-bookmarks — infraestrutura AWS (Terraform)
 
 > **Modo Cursor:** se estiver em *Plan mode*, troque para **Agent** para o assistente gravar os `.tf` automaticamente. Este README descreve o que será criado.
 
@@ -13,7 +13,7 @@
 ## Perfil AWS
 
 ```bash
-export AWS_PROFILE=sua-conta-blogmarks
+export AWS_PROFILE=sua-conta-aws
 export AWS_REGION=us-east-1
 cd terraform
 terraform init

@@ -1,5 +1,5 @@
 -- Ilhas de conhecimento: um vetor store lógico por usuário/time (island).
--- Rode após provisionar o RDS (Terraform) e conectar como user blogmarks:
+-- Rode após provisionar o RDS (Terraform) e conectar como user bookmarks:
 --   CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Dimensão do embedding: ajuste ao modelo (ex. 1536 text-embedding-3-small)

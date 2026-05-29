@@ -40,7 +40,7 @@ class AppContext:
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Open DB on startup, close on shutdown.
 
-    Set DYNAMODB_MODE=true to use DynamoDB (blogmarks-links / blogmarks-tags)
+    Set DYNAMODB_MODE=true to use DynamoDB (mcp-bookmarks-links / mcp-bookmarks-tags)
     instead of local SQLite.
 
     Tenant is resolved once at startup from DYNAMODB_ORG_ID (or MCP_API_KEYS
@@ -85,13 +85,12 @@ mcp = FastMCP(
     # Use MCP_HOST from env so DNS-rebinding protection is not auto-enabled
     # for the 127.0.0.1 default when deployed behind an ALB.
     host=os.environ.get("MCP_HOST", "0.0.0.0"),
-    # Browser clients (the Blogmarks PWA) call /mcp with one-shot tools/call
-    # POSTs that don't carry an Mcp-Session-Id. With the default stateful
-    # streamable_http transport, FastMCP rejects those with HTTP 400.
-    # stateless_http makes each request self-contained; json_response makes
-    # the response a single JSON body (instead of an SSE stream the PWA
-    # would have to parse). The SSE transport (used by Claude / Cursor) is
-    # unaffected by these flags.
+    # Browser clients call /mcp with one-shot tools/call POSTs that don't
+    # carry an Mcp-Session-Id. With the default stateful streamable_http
+    # transport, FastMCP rejects those with HTTP 400. stateless_http makes
+    # each request self-contained; json_response makes the response a
+    # single JSON body (instead of an SSE stream the browser would have to
+    # parse). The SSE transport (used by Claude / Cursor) is unaffected.
     stateless_http=True,
     json_response=True,
 )
@@ -156,10 +155,10 @@ async def save_bookmark(
     Fetches the page, parses og:title, og:description, og:image, etc.
     Returns the extracted metadata so you can decide how to tag it.
 
-    The PWA passes ``title``, ``bookmarkType``, ``flowId``, ``source``
-    along with the URL — they're stored on the DDB item under camelCase
-    keys (``bookmarkType``, ``flowId``) so PWA reads see them. When
-    ``title`` is omitted we fall back to the OG title.
+    First-party browser/mobile clients pass ``title``, ``bookmarkType``,
+    ``flowId``, ``source`` along with the URL — they're stored on the DDB
+    item under camelCase keys (``bookmarkType``, ``flowId``) so subsequent
+    reads see them. When ``title`` is omitted we fall back to the OG title.
 
     IMPORTANT: After saving, call get_tags() to see existing tags
     before creating new ones.
@@ -310,8 +309,8 @@ async def read_bookmark(bookmark_id: int | str, ctx: Context) -> str:
 
     await _mcp_record("mcp_read_bookmark", {"bookmark_id": str(bookmark_id)})
 
-    # Emit camelCase by alias (PWA reads ogImage, aiSummary, etc.) plus
-    # the snake_case fields kept for back-compat with existing clients.
+    # Emit camelCase by alias (canonical wire shape: ogImage, aiSummary, etc.)
+    # plus the snake_case fields kept for back-compat with existing clients.
     result = bookmark.model_dump(by_alias=True, exclude_none=True)
     result.setdefault("id", bookmark.dynamo_id or bookmark.id)
     snake = bookmark.model_dump(exclude_none=True)
@@ -1122,7 +1121,7 @@ def create_combined_app():
     # mounts while still keeping both transports alive.
     cors_origins_raw = os.environ.get(
         "MCP_CORS_ORIGINS",
-        "https://blogmarks.dev,https://www.blogmarks.dev,http://localhost:3000",
+        "http://localhost:3000",
     )
     cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
     from .bearer_auth import BearerAuthMiddleware

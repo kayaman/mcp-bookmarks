@@ -4,7 +4,7 @@ The combined Starlette app authenticates each request in
 :class:`mcp_bookmarks.bearer_auth.BearerAuthMiddleware` and stores the resolved
 identity on ``request.state``. MCP tools, however, don't have direct access to
 the Starlette ``Request`` — they call ``DynamoDBDatabase`` methods that need to
-filter rows by ``userId`` to keep multi-user PWA traffic isolated.
+filter rows by ``userId`` to keep multi-user traffic isolated.
 
 This module bridges that gap with a single :class:`contextvars.ContextVar`. The
 middleware sets ``current_user_id`` after a successful auth; the database layer

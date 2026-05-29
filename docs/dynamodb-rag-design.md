@@ -1,6 +1,6 @@
 # DynamoDB / cloud RAG design (bookmark vertical)
 
-Design target: **semantic retrieval over stored bookmark text** (`aiContent` / full article body) in **DynamoDB mode**, aligned with [blogmarks](https://blogmarks.dev) item shape. Implementation is **future work**; this document fixes choices for when you build it.
+Design target: **semantic retrieval over stored bookmark text** (`aiContent` / full article body) in **DynamoDB mode**, using the canonical camelCase item shape (`ogTitle`, `ogDescription`, `aiContent`, `aiTags`, …). Implementation is **future work**; this document fixes choices for when you build it.
 
 ## Goals
 
@@ -44,7 +44,7 @@ Choose one primary store (hybrid search can combine later).
 4. **DynamoDB-only (not recommended for ANN at scale)**  
    - Store chunk metadata + **base64 vector** or **S3** payload: workable only for small corpora; queries devolve to scan or heavy GSIs without native similarity.
 
-**Recommendation for blogmarks scale:** **pgvector** or **OpenSearch k-NN** with a single write path after `aiContent` is persisted.
+**Recommendation for personal-corpus scale:** **pgvector** or **OpenSearch k-NN** with a single write path after `aiContent` is persisted.
 
 ## Index schema sketch (pgvector)
 

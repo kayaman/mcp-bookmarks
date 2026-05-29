@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Logical prefix and Project tag."
   type        = string
-  default     = "blogmarks"
+  default     = "mcp-bookmarks"
 }
 
 variable "environment" {
@@ -94,9 +94,8 @@ variable "enable_alb" {
 }
 
 variable "mcp_hostname" {
-  description = "Public hostname for the MCP server (e.g. mcp.blogmarks.dev). Used for ACM cert and Route 53 alias."
+  description = "Public hostname for the MCP server (e.g. mcp.example.com). Used for ACM cert and Route 53 alias. Required when enable_alb=true."
   type        = string
-  default     = "mcp.blogmarks.dev"
 }
 
 variable "route53_zone_id" {
@@ -131,10 +130,10 @@ variable "gateway_api_key" {
   default     = ""
 }
 
-# ── Cognito JWT verification (PWA traffic) ──────────────────────────
+# ── Cognito JWT verification (first-party browser/mobile traffic) ──────
 
 variable "cognito_user_pool_id" {
-  description = "AWS Cognito User Pool ID that mints PWA ID tokens. When set together with cognito_client_id and mcp_bearer_auth=true, the BearerAuthMiddleware validates Cognito JWTs against this pool's JWKS. Empty disables Cognito auth (fall back to bm_v1_* tokens only)."
+  description = "AWS Cognito User Pool ID that mints first-party ID tokens. When set together with cognito_client_id and mcp_bearer_auth=true, the BearerAuthMiddleware validates Cognito JWTs against this pool's JWKS. Empty disables Cognito auth (fall back to bm_v1_* tokens only)."
   type        = string
   default     = ""
 }
@@ -152,7 +151,7 @@ variable "cognito_region" {
 }
 
 variable "mcp_connections_table" {
-  description = "DynamoDB table holding bm_v1_* scoped tokens (issued by the read-mcp Lambda's /mcp/connections). Empty disables scoped-token validation."
+  description = "DynamoDB table holding bm_v1_* scoped tokens (issued by an upstream provisioner, e.g. a /mcp/connections endpoint). Empty disables scoped-token validation."
   type        = string
   default     = ""
 }
@@ -163,16 +162,16 @@ variable "mcp_bearer_auth" {
   default     = false
 }
 
-# ── Override DynamoDB table names (use existing blogmarks app tables) ──
+# ── Override DynamoDB table names (use existing external tables) ───────
 
 variable "links_table_override" {
-  description = "If set, use this table name instead of the terraform-managed blogmarks-prod-links. Set to 'blogmarks-links' to share data with the blogmarks app's existing bookmark store."
+  description = "If set, use this table name instead of the terraform-managed {project_name}-prod-links. Useful when sharing data with an existing external bookmark store."
   type        = string
   default     = ""
 }
 
 variable "tags_table_override" {
-  description = "If set, use this table name instead of blogmarks-prod-tags. Set to 'blogmarks-tags' to share the tag taxonomy with the blogmarks app."
+  description = "If set, use this table name instead of {project_name}-prod-tags. Useful when sharing the tag taxonomy with an existing external store."
   type        = string
   default     = ""
 }

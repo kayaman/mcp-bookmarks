@@ -5,7 +5,7 @@ provider "aws" {
     tags = {
       Project     = var.project_name
       Environment = var.environment
-      Service     = "blogmarks"
+      Service     = "mcp-bookmarks"
       Product     = "mcp-bookmarks"
       ManagedBy   = "terraform"
       CostCenter  = var.cost_center

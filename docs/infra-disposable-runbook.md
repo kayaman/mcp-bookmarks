@@ -45,4 +45,4 @@ terraform apply
 ./terraform/scripts/package-lambda.sh
 ```
 
-Then `terraform apply` when `enable_lambda_processor` is true. Align Lambda item attributes with the **blogmarks** PWA schema (`aiContent`, etc.) if pointing at production tables.
+Then `terraform apply` when `enable_lambda_processor` is true. Align Lambda item attributes with the canonical camelCase schema (`aiContent`, `aiSummary`, etc.) if pointing at an external production store.

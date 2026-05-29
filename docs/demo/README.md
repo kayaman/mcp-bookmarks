@@ -1,6 +1,6 @@
 # Production Demo Guides
 
-Live endpoint: `https://mcp.blogmarks.dev`
+Live endpoint: `https://mcp.example.com` (replace with your deployed `var.mcp_hostname`)
 
 | Client | Transport | Guide |
 |---|---|---|
@@ -16,7 +16,7 @@ Same steps work in every client — compares UX, not behavior:
 2. Read resource `bookmarks://taxonomy` → tag list
 3. Prompt `save_and_tag(<url>)` → full extract → tag → summarize pipeline
 4. `search_bookmarks(query="agents")` → confirm item appears
-5. Open https://blogmarks.dev → same item in the PWA (same DynamoDB tables)
+5. Inspect via `read_bookmark(<id>)` or AWS console → confirm DynamoDB write
 
 ## Infra apply checklist (operator)
 
@@ -31,7 +31,7 @@ terraform plan -var="enable_alb=true" -var="ecs_desired_count=1" \
 terraform apply mcp.plan
 
 # After apply:
-terraform output mcp_public_url    # → https://mcp.blogmarks.dev
+terraform output mcp_public_url    # → https://<your var.mcp_hostname>
 ```
 
 Push a container image to ECR before setting `ecs_desired_count=1`:

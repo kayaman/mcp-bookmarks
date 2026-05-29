@@ -69,7 +69,7 @@ Tool principal: **`search-oreilly-content`** (pesquisa na plataforma com filtros
 
 Isto evita depender só do `extract_content` deste servidor quando o fetch directo falha.
 
-### 2) Conteúdo O’Reilly + arquivo no blogmarks
+### 2) Conteúdo O’Reilly + arquivo nos bookmarks
 
 1. Usa as tools do **MCP O’Reilly** para pesquisar e resumir (capítulos, vídeos, eventos).
 2. Se existir **URL estável** que possas guardar (política da plataforma e TOS), `save_bookmark(url)` ou `save_and_tag(url)`.
