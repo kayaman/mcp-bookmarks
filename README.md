@@ -292,6 +292,7 @@ mcp-bookmarks/
 
 ## Documentation index
 
+- **Go live** — [`docs/go-live.md`](docs/go-live.md): single-page operator walkthrough for the first AWS deployment (tfvars, ECR image, ALB + ACM, ECS, smoke test, optional Stripe + Lambda)
 - **Architecture decisions** — [`docs/adr/`](docs/adr/): seven decision records covering dual-mode storage, single-app transports, quota design, capability flags, vector roadmap, deploy boundary, and tenancy
 - **Product positioning** — [`docs/product-positioning.md`](docs/product-positioning.md): vertical-first hybrid boundary
 - **Production readiness** — [`docs/production-readiness.md`](docs/production-readiness.md): what's wired, what to verify
