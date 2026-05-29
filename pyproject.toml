@@ -27,6 +27,12 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# Default test run = unit + integration (no live network / no real AWS).
+# Run live tests explicitly: `pytest -m live` or via CI workflow_dispatch.
+addopts = "-m 'not live'"
+markers = [
+    "live: opt-in tests that hit real external services (network, AWS, real URLs)",
+]
 
 [project.scripts]
 mcp-bookmarks = "mcp_bookmarks.server:main"

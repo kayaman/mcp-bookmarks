@@ -6,9 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 from mcp_bookmarks.db import Database
 from mcp_bookmarks.models import Tenant
 from mcp_bookmarks.auth import resolve_tenant

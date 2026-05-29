@@ -3,11 +3,7 @@
 import base64
 import hashlib
 import hmac
-import sys
 import time
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from mcp_bookmarks.stripe_util import verify_stripe_signature
 

@@ -17,13 +17,9 @@ clients read snake_case (``description``, ``image_url``, ``site_name``,
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from mcp_bookmarks.dynamodb import _to_bookmark
 from mcp_bookmarks.models import Bookmark
