@@ -1123,7 +1123,13 @@ def create_combined_app():
     from starlette.routing import Mount, Route
     from starlette.responses import JSONResponse, RedirectResponse
 
-    from .api import ai_gateway_page, create_api_app, bookmarklet_page, stripe_webhook
+    from .api import (
+        ai_gateway_page,
+        bookmarklet_page,
+        create_api_app,
+        static_font_jetbrains_mono,
+        stripe_webhook,
+    )
 
     api_app = create_api_app()
     sse_app = mcp.sse_app()
@@ -1207,16 +1213,31 @@ def create_combined_app():
         "http://localhost:3000",
     )
     cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    from starlette.middleware.gzip import GZipMiddleware
+
+    from .api import AI_GATEWAY_SCRIPT_HASH
     from .bearer_auth import BearerAuthMiddleware
     from .correlation import CorrelationMiddleware
+    from .security_headers import SecurityHeadersMiddleware
     # Order matters:
-    #   - CorrelationMiddleware runs outermost so every later record (auth
-    #     rejects, CORS preflights, route handlers) carries the same id.
+    #   - GZip is outermost so the final byte stream (with every other
+    #     middleware's mutations baked in) gets compressed in one pass.
+    #     Starlette's GZipMiddleware auto-skips `text/event-stream` so /sse
+    #     keeps streaming uncompressed.
+    #   - Correlation IDs propagate next so every later log record carries
+    #     the same id.
+    #   - Security headers (incl. CSP for /bookmarklet + /ai-gateway) inject
+    #     before CORS preflight responses fly back.
     #   - CORS runs next so preflight responses get Access-Control-Allow-*
     #     even when bearer auth would reject the inner request.
     #   - Auth runs last, gating /mcp, /sse, /messages.
     middleware = [
+        Middleware(GZipMiddleware, minimum_size=500),
         Middleware(CorrelationMiddleware),
+        Middleware(
+            SecurityHeadersMiddleware,
+            ai_gateway_script_hash=AI_GATEWAY_SCRIPT_HASH,
+        ),
         Middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
@@ -1236,6 +1257,7 @@ def create_combined_app():
             Route("/ready", ready),
             Route("/bookmarklet", bookmarklet_page),
             Route("/ai-gateway", ai_gateway_page),
+            Route("/static/jetbrains-mono.woff2", static_font_jetbrains_mono),
             Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
             Mount("/api", app=api_app),
             *streamable_app.routes,  # Route(path='/mcp', ...)
