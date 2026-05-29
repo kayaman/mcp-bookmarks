@@ -5,6 +5,7 @@ import aiosqlite
 from pathlib import Path
 from datetime import datetime, timezone
 
+from .backend import SQLITE_CAPABILITIES
 from .models import Bookmark, Tag
 
 DEFAULT_DB_PATH = Path.home() / ".mcp-bookmarks" / "bookmarks.db"
@@ -90,7 +91,14 @@ class Database:
 
     Pass ``tenant_id`` to scope all reads and writes to that tenant.
     Defaults to ``"default"`` for single-user / personal installs.
+
+    Conforms to :class:`mcp_bookmarks.backend.BookmarkBackend` (see that
+    module for the documented contract).
     """
+
+    # Capability matrix for the SQLite backend.
+    # See src/mcp_bookmarks/backend.py for the documented flags.
+    capabilities = SQLITE_CAPABILITIES
 
     def __init__(self, db_path: Path = DEFAULT_DB_PATH, tenant_id: str = "default"):
         self.db_path = db_path
