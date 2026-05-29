@@ -48,8 +48,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     when a single static key is configured). For multi-tenant MCP deployments,
     run one server instance per tenant and set MCP_API_KEYS=key:org-id.
     """
+    import logging
+
     from .auth import require_api_key
     from .models import Tenant
+
+    log = logging.getLogger("mcp_bookmarks.lifespan")
 
     dynamo_mode = os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes")
     db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
@@ -67,10 +71,41 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     else:
         db = Database(db_path, tenant_id=tenant_id)
     await db.connect()
+    log.info(
+        "backend_initialized",
+        extra={
+            "backend": "dynamodb" if dynamo_mode else "sqlite",
+            "tenant_id": tenant_id,
+            "db_path": str(db_path) if not dynamo_mode else None,
+        },
+    )
     try:
         yield AppContext(db=db, tenant_id=tenant_id)
     finally:
+        log.info("backend_shutdown", extra={"backend": "dynamodb" if dynamo_mode else "sqlite"})
         await db.close()
+
+
+async def _open_db_for_ready():
+    """Open the active backend the same way app_lifespan does — used by /ready.
+
+    Kept thin so the readiness path bypasses MCP / FastMCP scaffolding and
+    only proves the storage adapter can connect + answer a trivial query.
+    """
+    from .models import Tenant
+
+    dynamo_mode = os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes")
+    db_path = Path(os.environ.get("BOOKMARKS_DB_PATH", str(DEFAULT_DB_PATH)))
+    tenant_id = os.environ.get("DYNAMODB_ORG_ID", "default")
+
+    if dynamo_mode:
+        from .dynamodb import DynamoDBDatabase
+
+        db = DynamoDBDatabase(tenant=Tenant(organization_id=tenant_id))
+    else:
+        db = Database(db_path, tenant_id=tenant_id)
+    await db.connect()
+    return db
 
 
 # ── Server instance ───────────────────────────────────────────────
@@ -1100,11 +1135,64 @@ def create_combined_app():
         return RedirectResponse("/bookmarklet")
 
     async def health(request):
+        """Liveness probe: returns 200 as long as the process is up."""
         return JSONResponse({"status": "ok"})
+
+    async def ready(request):
+        """Readiness probe: returns 200 only when the active backend is reachable.
+
+        Used by ECS/ALB target health checks and by clients that need to wait
+        for the cold-start path (DB connect, DynamoDB describe) to complete.
+        Returns 503 with structured details on failure so the alarm payload is
+        readable.
+        """
+        import asyncio
+        import logging
+
+        ready_log = logging.getLogger("mcp_bookmarks.health")
+        try:
+            db = await asyncio.wait_for(_open_db_for_ready(), timeout=3.0)
+        except asyncio.TimeoutError:
+            ready_log.warning("ready_check_failed", extra={"reason": "open_timeout"})
+            return JSONResponse(
+                {"status": "not_ready", "reason": "backend open timed out"},
+                status_code=503,
+            )
+        except Exception as exc:
+            ready_log.warning(
+                "ready_check_failed", extra={"reason": "open_error", "error": str(exc)}
+            )
+            return JSONResponse(
+                {"status": "not_ready", "reason": str(exc)},
+                status_code=503,
+            )
+        try:
+            await asyncio.wait_for(db.get_stats(), timeout=3.0)
+        except Exception as exc:
+            ready_log.warning(
+                "ready_check_failed", extra={"reason": "ping_error", "error": str(exc)}
+            )
+            return JSONResponse(
+                {"status": "not_ready", "reason": str(exc)},
+                status_code=503,
+            )
+        finally:
+            try:
+                await db.close()
+            except Exception:  # noqa: BLE001 — close failure must not flip ready
+                pass
+        return JSONResponse({"status": "ready"})
 
     @asynccontextmanager
     async def _lifespan(app):
         """Run the StreamableHTTP session manager for the lifetime of the app."""
+        # Structured logging is configured here rather than at module import
+        # time so the right format (json vs pretty) is picked up from the env
+        # the uvicorn process sees, not from whatever was set when the module
+        # was first imported.
+        from .logging_config import configure_logging
+
+        configure_logging()
         async with mcp.session_manager.run():
             yield
 
@@ -1120,16 +1208,21 @@ def create_combined_app():
     )
     cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
     from .bearer_auth import BearerAuthMiddleware
-    # Order matters: CORS runs outermost so preflight responses still get
-    # Access-Control-Allow-Origin even when bearer auth would reject the inner
-    # request. Auth runs after, gating /mcp, /sse, /messages.
+    from .correlation import CorrelationMiddleware
+    # Order matters:
+    #   - CorrelationMiddleware runs outermost so every later record (auth
+    #     rejects, CORS preflights, route handlers) carries the same id.
+    #   - CORS runs next so preflight responses get Access-Control-Allow-*
+    #     even when bearer auth would reject the inner request.
+    #   - Auth runs last, gating /mcp, /sse, /messages.
     middleware = [
+        Middleware(CorrelationMiddleware),
         Middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
-            allow_headers=["Authorization", "Content-Type", "Accept", "Mcp-Session-Id"],
-            expose_headers=["Mcp-Session-Id"],
+            allow_headers=["Authorization", "Content-Type", "Accept", "Mcp-Session-Id", "X-Correlation-ID"],
+            expose_headers=["Mcp-Session-Id", "X-Correlation-ID"],
             max_age=600,
         ),
         Middleware(BearerAuthMiddleware),
@@ -1140,6 +1233,7 @@ def create_combined_app():
         routes=[
             Route("/", root),
             Route("/health", health),
+            Route("/ready", ready),
             Route("/bookmarklet", bookmarklet_page),
             Route("/ai-gateway", ai_gateway_page),
             Route("/webhooks/stripe", stripe_webhook, methods=["POST"]),
