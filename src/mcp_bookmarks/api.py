@@ -24,6 +24,7 @@ Webhook (mount at app root):
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -32,6 +33,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, HTMLResponse
 from starlette.routing import Route
+from .api_envelope import ErrorCode, error_response
+from .api_requests import (
+    BookmarkSummaryRequest,
+    BookmarkTagsRequest,
+    CreateTagRequest,
+    EnsembleRequest,
+    SaveBookmarkRequest,
+    parse_request_body,
+)
 from .auth import api_keys_configured, require_api_key
 from .db import Database, DEFAULT_DB_PATH
 from .scraper import extract_og_metadata, extract_article_content
@@ -39,6 +49,8 @@ from .stripe_util import verify_stripe_signature
 from .subscription_store import extract_subscription_fields, upsert_from_stripe_event
 from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
 from . import llm_ensemble
+
+log = logging.getLogger(__name__)
 
 
 def _dynamodb_mode() -> bool:
@@ -62,9 +74,11 @@ async def _check_rest_quota(tenant: str) -> JSONResponse | None:
     ok, used, limit = await check_quota_for_backend(_get_db_path(), tenant)
     if ok:
         return None
-    return JSONResponse(
-        {"error": "monthly_quota_exceeded", "used": used, "limit": limit},
-        status_code=429,
+    return error_response(
+        ErrorCode.RATE_LIMITED,
+        "Monthly usage quota exceeded for this tenant",
+        status=429,
+        details={"used": used, "limit": limit},
     )
 
 
@@ -92,7 +106,11 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         ok, tenant = require_api_key(request.headers)
         if not ok:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return error_response(
+                ErrorCode.UNAUTHORIZED,
+                "Missing or invalid API key",
+                status=401,
+            )
         request.state.tenant_id = tenant
         return await call_next(request)
 
@@ -110,20 +128,31 @@ async def api_save(request: Request) -> JSONResponse:
     content_type = request.headers.get("content-type", "")
 
     if "application/json" in content_type:
-        body = await request.json()
-        url = body.get("url")
+        body_model, err = await parse_request_body(request, SaveBookmarkRequest)
+        if err is not None:
+            return err
+        url = body_model.url
     else:
+        # Form-encoded bookmarklet POST or query-string fallback.
         form = await request.form()
         url = form.get("url") or request.query_params.get("url")
-
-    if not url:
-        return JSONResponse({"error": "Missing 'url' parameter"}, status_code=400)
+        if not url:
+            return error_response(
+                ErrorCode.INVALID_REQUEST,
+                "Missing 'url' parameter",
+                status=400,
+                details={"fields": [{"loc": "url", "type": "missing", "message": "required"}]},
+            )
 
     db = await _db(request)
     try:
         try:
             og = await extract_og_metadata(url)
-        except Exception:
+        except (OSError, ValueError) as exc:
+            # Network / parse failure at the scraper boundary. Persist the bookmark
+            # with just the URL so the user's intent is recorded; the page can be
+            # re-fetched later via extract_content.
+            log.warning("og_metadata_extraction_failed", extra={"url": url, "error": str(exc)})
             from .models import OGMetadata
 
             og = OGMetadata(url=url)
@@ -140,7 +169,9 @@ async def api_save(request: Request) -> JSONResponse:
             article = await extract_article_content(url)
             await db.set_bookmark_content(bookmark.id, article.text, article.word_count)
             word_count = article.word_count
-        except Exception:
+        except (OSError, ValueError) as exc:
+            # Same boundary as the OG fallback above.
+            log.warning("article_extraction_failed", extra={"url": url, "error": str(exc)})
             word_count = 0
 
         await _record_rest_usage(tenant, "rest_bookmark_save", {"url": og.url})
@@ -231,7 +262,11 @@ async def api_get_bookmark(request: Request) -> JSONResponse:
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
         if not bm:
-            return JSONResponse({"error": "not_found"}, status_code=404)
+            return error_response(
+                ErrorCode.NOT_FOUND,
+                f"Bookmark {bookmark_id} not found",
+                status=404,
+            )
         payload = bm.model_dump(mode="json")
         content = payload.get("content") or ""
         if isinstance(content, str) and len(content) > _MAX_BOOKMARK_CONTENT_JSON:
@@ -248,25 +283,21 @@ async def api_create_tag_rest(request: Request) -> JSONResponse:
     blocked = await _check_rest_quota(tenant)
     if blocked:
         return blocked
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-    slug = (body.get("slug") or "").strip()
-    name = (body.get("name") or "").strip()
-    description = (body.get("description") or "").strip()
-    if not slug or not name:
-        return JSONResponse(
-            {"error": "slug and name are required"},
-            status_code=400,
-        )
+    body_model, err = await parse_request_body(request, CreateTagRequest)
+    if err is not None:
+        return err
+    slug = body_model.slug.strip()
+    name = body_model.name.strip()
+    description = body_model.description.strip()
     db = await _db(request)
     try:
         existing = await db.get_tag_by_slug(slug)
         if existing:
-            return JSONResponse(
-                {"error": "tag_exists", "slug": slug},
-                status_code=409,
+            return error_response(
+                ErrorCode.CONFLICT,
+                f"Tag '{slug}' already exists",
+                status=409,
+                details={"slug": slug},
             )
         tag = await db.create_tag(slug=slug, name=name, description=description)
         await _record_rest_usage(tenant, "rest_create_tag", {"slug": slug})
@@ -291,19 +322,19 @@ async def api_bookmark_summary(request: Request) -> JSONResponse:
     if blocked:
         return blocked
     bookmark_id = request.path_params["bookmark_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-    summary = body.get("summary")
-    if summary is None or not isinstance(summary, str):
-        return JSONResponse({"error": "summary must be a string"}, status_code=400)
+    body_model, err = await parse_request_body(request, BookmarkSummaryRequest)
+    if err is not None:
+        return err
     db = await _db(request)
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
         if not bm:
-            return JSONResponse({"error": "not_found"}, status_code=404)
-        await db.set_bookmark_summary(bookmark_id, summary)
+            return error_response(
+                ErrorCode.NOT_FOUND,
+                f"Bookmark {bookmark_id} not found",
+                status=404,
+            )
+        await db.set_bookmark_summary(bookmark_id, body_model.summary)
         await _record_rest_usage(tenant, "rest_set_summary", {"bookmark_id": str(bookmark_id)})
         return JSONResponse({"status": "ok", "bookmark_id": bookmark_id})
     finally:
@@ -317,25 +348,27 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
     if blocked:
         return blocked
     bookmark_id = request.path_params["bookmark_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-    slugs = body.get("tag_slugs")
-    if not isinstance(slugs, list) or not all(isinstance(s, str) for s in slugs):
-        return JSONResponse(
-            {"error": "tag_slugs must be a list of strings"},
-            status_code=400,
-        )
+    body_model, err = await parse_request_body(request, BookmarkTagsRequest)
+    if err is not None:
+        return err
+    slugs = body_model.tag_slugs
     db = await _db(request)
     try:
         bm = await db.get_bookmark_by_id(bookmark_id)
         if not bm:
-            return JSONResponse({"error": "not_found"}, status_code=404)
+            return error_response(
+                ErrorCode.NOT_FOUND,
+                f"Bookmark {bookmark_id} not found",
+                status=404,
+            )
         try:
             await db.tag_bookmark(bookmark_id, slugs)
-        except ValueError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
+        except ValueError as exc:
+            return error_response(
+                ErrorCode.INVALID_REQUEST,
+                str(exc),
+                status=400,
+            )
         await _record_rest_usage(
             tenant, "rest_tag_bookmark", {"bookmark_id": str(bookmark_id), "count": len(slugs)}
         )
@@ -370,30 +403,21 @@ async def api_ensemble(request: Request) -> JSONResponse:
     if blocked:
         return blocked
     if not llm_ensemble.ensemble_enabled():
-        return JSONResponse(
-            {
-                "error": "Set ENSEMBLE_ENABLED=true to use this endpoint.",
-                "hint": "See docs/ai-gateway-ensemble.md for configuration.",
-            },
-            status_code=403,
+        return error_response(
+            ErrorCode.FORBIDDEN,
+            "AI Gateway ensemble is disabled on this server",
+            status=403,
+            details={"hint": "Set ENSEMBLE_ENABLED=true; see docs/ai-gateway-ensemble.md"},
         )
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "invalid json"}, status_code=400)
-    task = (body.get("task") or "").strip()
-    if not task:
-        return JSONResponse({"error": "Missing 'task'"}, status_code=400)
+    body_model, err = await parse_request_body(request, EnsembleRequest)
+    if err is not None:
+        return err
 
+    task = body_model.task.strip()
     mlist = None
-    models = body.get("models")
-    if isinstance(models, list):
-        mlist = [str(x).strip() for x in models if str(x).strip()]
-    elif isinstance(models, str) and models.strip():
-        mlist = [x.strip() for x in models.split(",") if x.strip()]
-
-    jm = body.get("judge_model")
-    judge_model = str(jm).strip() if jm else None
+    if body_model.models:
+        mlist = [m.strip() for m in body_model.models if m.strip()]
+    judge_model = body_model.judge_model.strip() if body_model.judge_model else None
 
     out = await llm_ensemble.run_ensemble_with_judge(
         task,
@@ -735,17 +759,31 @@ async def stripe_webhook(request: Request) -> JSONResponse:
     """POST /webhooks/stripe — Verify signature and persist subscription state."""
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
     if not secret:
-        return JSONResponse({"error": "STRIPE_WEBHOOK_SECRET not configured"}, status_code=503)
+        return error_response(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "Stripe webhook is not configured on this server",
+            status=503,
+            details={"hint": "Set STRIPE_WEBHOOK_SECRET"},
+        )
 
     body = await request.body()
     sig = request.headers.get("stripe-signature")
     if not verify_stripe_signature(body, sig, secret):
-        return JSONResponse({"error": "invalid signature"}, status_code=400)
+        return error_response(
+            ErrorCode.INVALID_SIGNATURE,
+            "Stripe-Signature header did not match the payload",
+            status=400,
+        )
 
     try:
         event = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "invalid json"}, status_code=400)
+    except json.JSONDecodeError as exc:
+        return error_response(
+            ErrorCode.INVALID_JSON,
+            "Webhook body is not valid JSON",
+            status=400,
+            details={"reason": str(exc)},
+        )
 
     etype = event.get("type")
     obj = event.get("data", {}).get("object")
