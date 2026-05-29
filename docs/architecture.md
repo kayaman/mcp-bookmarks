@@ -115,6 +115,16 @@ quota logic directly" closes when Phase 2 ships.
 
 ## Related ADRs and tickets
 
+**ADRs** (see [`docs/adr/`](adr/) for the full set):
+
+- [ADR-0001](adr/0001-sqlite-dynamodb-dual-mode-storage.md) — SQLite + DynamoDB dual-mode storage
+- [ADR-0002](adr/0002-mcp-rest-coexistence-on-single-starlette-app.md) — MCP + REST on a single Starlette app
+- [ADR-0003](adr/0003-quota-and-usage-metering.md) — Quota state in the active backend
+- [ADR-0004](adr/0004-backend-capability-divergence.md) — Backend capability flags
+- [ADR-0005](adr/0005-vector-search-roadmap.md) — Vector search roadmap (cloud deferred)
+
+**Tickets:**
+
 - [WDN-393](https://linear.app/kayaman/issue/WDN-393) — this ticket
 - [WDN-394 / OSS-4](https://linear.app/kayaman/issue/WDN-394) — capability
   enforcement (caller-side short-circuit), depends on this protocol
