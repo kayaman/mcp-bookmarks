@@ -79,6 +79,10 @@ async def _check_rest_quota(tenant: str) -> JSONResponse | None:
     ok, used, limit = await check_quota_for_backend(_get_db_path(), tenant)
     if ok:
         return None
+    log.warning(
+        "quota_denied",
+        extra={"tenant_id": tenant, "used": used, "limit": limit, "surface": "rest"},
+    )
     return error_response(
         ErrorCode.RATE_LIMITED,
         "Monthly usage quota exceeded for this tenant",
@@ -832,6 +836,7 @@ async def stripe_webhook(request: Request) -> JSONResponse:
     etype = event.get("type")
     obj = event.get("data", {}).get("object")
     if not isinstance(obj, dict):
+        log.info("stripe_webhook_ignored", extra={"reason": "no_data_object", "type": etype})
         return JSONResponse({"received": True, "ignored": True})
 
     if etype in (
@@ -842,8 +847,13 @@ async def stripe_webhook(request: Request) -> JSONResponse:
         cid, status, plan_sku, cpe = extract_subscription_fields(obj)
         if cid:
             await upsert_from_stripe_event(cid, status, plan_sku, cpe, obj)
+        log.info(
+            "stripe_webhook_processed",
+            extra={"type": etype, "customer_id": cid, "status": status, "plan": plan_sku},
+        )
         return JSONResponse({"received": True, "type": etype})
 
+    log.info("stripe_webhook_ignored", extra={"reason": "unhandled_type", "type": etype})
     return JSONResponse({"received": True, "ignored": etype})
 
 
