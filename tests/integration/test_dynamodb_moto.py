@@ -257,3 +257,180 @@ async def test_get_stats_counts_bookmarks_and_tags(ddb):
     stats = await ddb.get_stats()
     assert stats["total_bookmarks"] == 2
     assert stats["total_tags"] == 1
+
+
+# ── untag_bookmark (round 3) ──────────────────────────────────────────
+
+
+async def test_untag_bookmark_removes_one_of_three(ddb):
+    await ddb.create_tag("a", "A", "")
+    await ddb.create_tag("b", "B", "")
+    await ddb.create_tag("c", "C", "")
+    bk = await ddb.upsert_bookmark(url="https://x.com/multi", title="Multi")
+    await ddb.tag_bookmark(bk.dynamo_id, ["a", "b", "c"])
+
+    result = await ddb.untag_bookmark(bk.dynamo_id, ["b"])
+    assert result is not None
+    assert set(result.tags) == {"a", "c"}
+
+
+async def test_untag_bookmark_removes_all_tags(ddb):
+    await ddb.create_tag("a", "A", "")
+    await ddb.create_tag("b", "B", "")
+    bk = await ddb.upsert_bookmark(url="https://x.com/both", title="Both")
+    await ddb.tag_bookmark(bk.dynamo_id, ["a", "b"])
+
+    result = await ddb.untag_bookmark(bk.dynamo_id, ["a", "b"])
+    assert result is not None
+    assert result.tags == []
+
+
+async def test_untag_bookmark_is_idempotent_for_unknown_tag(ddb):
+    """Removing a tag the bookmark doesn't have is a no-op (no error)."""
+    await ddb.create_tag("a", "A", "")
+    bk = await ddb.upsert_bookmark(url="https://x.com/ind", title="Ind")
+    await ddb.tag_bookmark(bk.dynamo_id, ["a"])
+
+    result = await ddb.untag_bookmark(bk.dynamo_id, ["never-applied"])
+    assert result is not None
+    assert result.tags == ["a"]
+
+
+async def test_untag_bookmark_returns_none_for_missing_bookmark(ddb):
+    assert await ddb.untag_bookmark("00000000-0000-0000-0000-000000000000", ["x"]) is None
+
+
+async def test_untag_bookmark_handles_int_id_gracefully(ddb):
+    """_dynamo_key(int) returns None → untag returns None (defensive guard)."""
+    assert await ddb.untag_bookmark(12345, ["x"]) is None  # type: ignore[arg-type]
+
+
+# ── update_tag branches ────────────────────────────────────────────────
+
+
+async def test_update_tag_name_only(ddb):
+    await ddb.create_tag("orig", "Original", "desc")
+    result = await ddb.update_tag("orig", new_name="Renamed")
+    assert result is not None
+    assert result.name == "Renamed"
+    assert result.description == "desc"  # unchanged
+
+
+async def test_update_tag_description_only(ddb):
+    await ddb.create_tag("orig2", "Name2", "old desc")
+    result = await ddb.update_tag("orig2", new_description="new desc")
+    assert result is not None
+    assert result.name == "Name2"  # unchanged
+    assert result.description == "new desc"
+
+
+async def test_update_tag_no_op_returns_existing(ddb):
+    """Both updates None → early-return path (dynamodb.py:271-273)."""
+    await ddb.create_tag("orig3", "Stable", "stable")
+    result = await ddb.update_tag("orig3")  # neither arg provided
+    assert result is not None
+    assert result.name == "Stable"
+    assert result.description == "stable"
+
+
+async def test_update_tag_missing_returns_none(ddb):
+    """update_tag on a non-existent slug returns None."""
+    assert await ddb.update_tag("does-not-exist", new_name="x") is None
+
+
+# ── merge_tags error paths ────────────────────────────────────────────
+
+
+async def test_merge_tags_raises_when_source_missing(ddb):
+    """dynamodb.py:331 — source slug missing → ValueError."""
+    await ddb.create_tag("target-ok", "T", "")
+    with pytest.raises(ValueError, match="Source tag 'missing-src' not found"):
+        await ddb.merge_tags("missing-src", "target-ok")
+
+
+async def test_merge_tags_raises_when_target_missing(ddb):
+    """dynamodb.py:333 — target slug missing → ValueError."""
+    await ddb.create_tag("source-ok", "S", "")
+    with pytest.raises(ValueError, match="Target tag 'missing-tgt' not found"):
+        await ddb.merge_tags("source-ok", "missing-tgt")
+
+
+# ── search_tags empty result ──────────────────────────────────────────
+
+
+async def test_search_tags_returns_empty_when_no_matches(ddb):
+    """dynamodb.py:228-230 — empty result list path."""
+    await ddb.create_tag("python", "Python", "")
+    result = await ddb.search_tags("rust")
+    assert result == []
+
+
+async def test_search_tags_returns_empty_for_empty_taxonomy(ddb):
+    result = await ddb.search_tags("anything")
+    assert result == []
+
+
+# ── search_bookmarks non-paged wrapper (dynamodb.py:577-578) ──────────
+
+
+async def test_search_bookmarks_non_paged_wrapper(ddb):
+    """Direct call to search_bookmarks (the non-paged variant)."""
+    await ddb.upsert_bookmark(url="https://x.com/np1", title="NP1")
+    await ddb.upsert_bookmark(url="https://x.com/np2", title="NP2")
+    result = await ddb.search_bookmarks(limit=10)
+    assert len(result) == 2
+
+
+# ── get_full_export + get_all_bookmarks ───────────────────────────────
+
+
+async def test_get_full_export_returns_shape(ddb):
+    """dynamodb.py:696-700 — export wrapper around bookmarks + tags + stats."""
+    await ddb.upsert_bookmark(url="https://x.com/e1", title="E1", description="d1")
+    await ddb.upsert_bookmark(url="https://x.com/e2", title="E2")
+    await ddb.create_tag("exp", "Exp", "tag")
+    export = await ddb.get_full_export()
+    assert export["version"] == "1.0"
+    assert "exported_at" in export
+    assert export["stats"]["total_bookmarks"] == 2
+    assert export["stats"]["total_tags"] == 1
+    assert len(export["bookmarks"]) == 2
+    assert len(export["tags"]) == 1
+
+
+async def test_get_all_bookmarks_direct_call(ddb):
+    """dynamodb.py:689-694 — direct exercise of get_all_bookmarks."""
+    await ddb.upsert_bookmark(url="https://x.com/all1", title="All1")
+    await ddb.upsert_bookmark(url="https://x.com/all2", title="All2")
+    bookmarks = await ddb.get_all_bookmarks()
+    assert len(bookmarks) == 2
+    urls = {b.url for b in bookmarks}
+    assert urls == {"https://x.com/all1", "https://x.com/all2"}
+
+
+# ── _dynamo_key(int) defensive guard ──────────────────────────────────
+
+
+async def test_dynamo_key_returns_none_for_int(ddb):
+    """dynamodb.py:449 — _dynamo_key(int) returns None.
+
+    DynamoDB IDs are UUIDs (strings); ints are SQLite-only. The defensive
+    guard returns None so callers handle "not found" cleanly.
+    """
+    assert ddb._dynamo_key(12345) is None  # type: ignore[arg-type]
+    assert ddb._dynamo_key(None) is None
+    assert ddb._dynamo_key("") is None
+
+
+# ── Corrupt cursor in search_bookmarks_paged ──────────────────────────
+
+
+async def test_search_paged_silently_ignores_corrupt_cursor(ddb):
+    """dynamodb.py:622 contextlib.suppress on malformed base64/JSON cursor.
+
+    The function should NOT raise; it just resets to start-of-scan.
+    """
+    await ddb.upsert_bookmark(url="https://x.com/c1", title="C1")
+    bookmarks, _next = await ddb.search_bookmarks_paged(limit=10, cursor="!!!not_base64!!!")
+    # Got back the bookmark (cursor was ignored, scan started fresh)
+    assert len(bookmarks) == 1

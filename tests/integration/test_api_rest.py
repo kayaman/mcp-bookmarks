@@ -321,3 +321,430 @@ async def test_capabilities_reports_sqlite_payload(monkeypatch, tmp_path):
         "usage_metering": True,
         "subscription_storage": True,
     }
+
+
+# ── POST /api/save (round 3) ──────────────────────────────────────────
+
+
+async def test_save_json_body_persists_bookmark(monkeypatch, tmp_path):
+    """JSON body: scraper monkey-patched so no network; verify the row lands."""
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.bookmark.extract_og_metadata",
+        _fake_og_factory(title="Saved", description="d"),
+    )
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.bookmark.extract_article_content",
+        _fake_article_factory(text="hello world", word_count=2),
+    )
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        r = await client.post("/save", json={"url": "https://example.com/j"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "saved"
+    assert body["title"] == "Saved"
+    assert body["word_count"] == 2
+    # And the bookmark is in the DB
+    from mcp_bookmarks.db import Database
+
+    db = Database(db_path)
+    await db.connect()
+    try:
+        bm = await db.get_bookmark_by_id(body["bookmark_id"])
+    finally:
+        await db.close()
+    assert bm is not None
+    assert bm.url == "https://example.com/j"
+
+
+async def test_save_form_encoded_body_persists(monkeypatch, tmp_path):
+    """Form-encoded bookmarklet POST: api.py:143-153 form/query branch."""
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.bookmark.extract_og_metadata",
+        _fake_og_factory(title="Form", description=""),
+    )
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.bookmark.extract_article_content",
+        _fake_article_factory(text="", word_count=0),
+    )
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post(
+            "/save",
+            content="url=https%3A%2F%2Fexample.com%2Ff",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    assert r.status_code == 200
+    assert r.json()["status"] == "saved"
+
+
+async def test_save_form_query_param_fallback(monkeypatch, tmp_path):
+    """Form-encoded route with `url` in query string instead of body."""
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.bookmark.extract_og_metadata",
+        _fake_og_factory(title="Q", description=""),
+    )
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.bookmark.extract_article_content",
+        _fake_article_factory(text="", word_count=0),
+    )
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post(
+            "/save?url=https://example.com/q",
+            content="",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    assert r.status_code == 200
+    assert r.json()["status"] == "saved"
+
+
+async def test_save_missing_url_returns_400(monkeypatch, tmp_path):
+    """Form path with no URL anywhere — api.py:147-153 error envelope."""
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post(
+            "/save",
+            content="",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["code"] == "invalid_request"
+    assert any(f["loc"] == "url" for f in err["details"]["fields"])
+
+
+async def test_save_blocked_by_quota_returns_429(monkeypatch, tmp_path):
+    """Quota path: monkeypatch quota_service.check to return blocked."""
+    from starlette.responses import JSONResponse
+
+    async def _blocked(*, db_path, tenant_id, surface):
+        return False, 100, 100  # blocked
+
+    monkeypatch.setattr("mcp_bookmarks.api.quota_service.check", _blocked)
+    monkeypatch.setattr(
+        "mcp_bookmarks.api.quota_service.rest_block_response",
+        lambda used, limit: JSONResponse(
+            {"error": {"code": "rate_limited", "details": {"used": used, "limit": limit}}},
+            status_code=429,
+        ),
+    )
+
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post("/save", json={"url": "https://example.com/q"})
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "rate_limited"
+
+
+# ── GET /api/bookmarks (list/search) ──────────────────────────────────
+
+
+async def test_list_bookmarks_returns_empty_list(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.get("/bookmarks")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"total": 0, "bookmarks": []}
+
+
+async def test_list_bookmarks_returns_seeded_rows(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        await _seed_bookmark(db_path, url="https://example.com/1", title="One")
+        await _seed_bookmark(db_path, url="https://example.com/2", title="Two")
+        r = await client.get("/bookmarks")
+    body = r.json()
+    assert body["total"] == 2
+    urls = {b["url"] for b in body["bookmarks"]}
+    assert urls == {"https://example.com/1", "https://example.com/2"}
+
+
+async def test_list_bookmarks_filters_by_tag(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        await _seed_tag(db_path, "py", "Python")
+        bid1 = await _seed_bookmark(db_path, url="https://example.com/a", title="A")
+        await _seed_bookmark(db_path, url="https://example.com/b", title="B")
+        # Tag only bid1
+        from mcp_bookmarks.db import Database
+
+        db = Database(db_path)
+        await db.connect()
+        try:
+            await db.tag_bookmark(bid1, ["py"])
+        finally:
+            await db.close()
+
+        r = await client.get("/bookmarks?tag=py")
+    body = r.json()
+    assert body["total"] == 1
+    assert body["bookmarks"][0]["url"] == "https://example.com/a"
+
+
+async def test_list_bookmarks_respects_limit_query_param(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        for i in range(5):
+            await _seed_bookmark(db_path, url=f"https://example.com/{i}", title=f"B{i}")
+        r = await client.get("/bookmarks?limit=2")
+    body = r.json()
+    assert body["total"] == 2
+
+
+# ── GET /api/tags ─────────────────────────────────────────────────────
+
+
+async def test_list_tags_empty(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.get("/tags")
+    assert r.status_code == 200
+    assert r.json() == {"total": 0, "tags": []}
+
+
+async def test_list_tags_returns_full_shape(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        await _seed_tag(db_path, "python", "Python", "lang")
+        await _seed_tag(db_path, "web", "Web", "")
+        r = await client.get("/tags")
+    body = r.json()
+    assert body["total"] == 2
+    slugs = {t["slug"] for t in body["tags"]}
+    assert slugs == {"python", "web"}
+    py = next(t for t in body["tags"] if t["slug"] == "python")
+    assert py["name"] == "Python"
+    assert py["description"] == "lang"
+    assert py["usage_count"] == 0  # nothing tagged yet
+
+
+# ── GET /api/stats ────────────────────────────────────────────────────
+
+
+async def test_stats_returns_counts(monkeypatch, tmp_path):
+    """Covers api.py:181-186 (small guard cluster)."""
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        await _seed_bookmark(db_path, url="https://example.com/s", title="S")
+        await _seed_tag(db_path, "t1", "T1")
+        r = await client.get("/stats")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_bookmarks"] == 1
+    assert body["total_tags"] == 1
+
+
+# ── POST /api/ensemble ────────────────────────────────────────────────
+
+
+async def test_ensemble_disabled_returns_403(monkeypatch, tmp_path):
+    monkeypatch.setattr("mcp_bookmarks.llm_ensemble.ensemble_enabled", lambda: False)
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post("/ensemble", json={"task": "what's 2+2?"})
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "forbidden"
+
+
+async def test_ensemble_happy_path_returns_payload(monkeypatch, tmp_path):
+    monkeypatch.setattr("mcp_bookmarks.llm_ensemble.ensemble_enabled", lambda: True)
+
+    async def _fake_run(task, *, models=None, judge_model=None):
+        return {"ok": True, "answer": "4", "candidates": [{"model": "m1", "text": "4"}]}
+
+    monkeypatch.setattr("mcp_bookmarks.llm_ensemble.run_ensemble_with_judge", _fake_run)
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        # api_ensemble doesn't open Database itself, so bootstrap the schema
+        # so _record_rest_usage's usage_events write doesn't 1-error.
+        from mcp_bookmarks.db import Database
+
+        db = Database(db_path)
+        await db.connect()
+        await db.close()
+        r = await client.post(
+            "/ensemble",
+            json={"task": "what's 2+2?", "models": ["m1"], "judge_model": "j1"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["answer"] == "4"
+
+
+async def test_ensemble_422_on_empty_task(monkeypatch, tmp_path):
+    monkeypatch.setattr("mcp_bookmarks.llm_ensemble.ensemble_enabled", lambda: True)
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post("/ensemble", json={"task": ""})
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["code"] == "validation_error"
+
+
+# ── TenantAuthMiddleware path (api.py:1052) ───────────────────────────
+
+
+async def test_tenant_auth_middleware_rejects_missing_key(monkeypatch, tmp_path):
+    """When MCP_API_KEYS is set, the middleware is mounted (api.py:1052).
+
+    A request without a key gets the standard 401 envelope.
+    """
+    db_path = tmp_path / "x.db"
+    monkeypatch.setenv("BOOKMARKS_DB_PATH", str(db_path))
+    monkeypatch.setenv("MCP_API_KEYS", "secret-key:tenant-a")
+    monkeypatch.delenv("MCP_MONTHLY_USAGE_LIMIT", raising=False)
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+
+    from mcp_bookmarks.api import create_api_app
+
+    app = create_api_app()
+    transport = httpx.ASGITransport(app=app)
+    async with LifespanManager(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            r = await client.get("/stats")  # no x-api-key header
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "unauthorized"
+
+
+async def test_tenant_auth_middleware_accepts_valid_key(monkeypatch, tmp_path):
+    db_path = tmp_path / "x.db"
+    monkeypatch.setenv("BOOKMARKS_DB_PATH", str(db_path))
+    monkeypatch.setenv("MCP_API_KEYS", "secret-key:tenant-a")
+    monkeypatch.delenv("MCP_MONTHLY_USAGE_LIMIT", raising=False)
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+
+    from mcp_bookmarks.api import create_api_app
+
+    app = create_api_app()
+    transport = httpx.ASGITransport(app=app)
+    async with LifespanManager(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            r = await client.get("/stats", headers={"x-api-key": "secret-key"})
+    assert r.status_code == 200
+
+
+# ── POST /webhooks/stripe ─────────────────────────────────────────────
+#
+# stripe_webhook is mounted on the OUTER app (server.py:1273), not via
+# create_api_app, so we build a minimal Starlette app here.
+
+
+def _stripe_app():
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    from mcp_bookmarks.api import stripe_webhook
+
+    return Starlette(routes=[Route("/webhooks/stripe", stripe_webhook, methods=["POST"])])
+
+
+@asynccontextmanager
+async def _stripe_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    db_path = tmp_path / "subs.db"
+    monkeypatch.setenv("BOOKMARKS_DB_PATH", str(db_path))
+    app = _stripe_app()
+    transport = httpx.ASGITransport(app=app)
+    async with LifespanManager(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            yield c
+
+
+async def test_stripe_webhook_503_when_secret_unconfigured(monkeypatch, tmp_path):
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    async with _stripe_client(monkeypatch, tmp_path) as client:
+        r = await client.post("/webhooks/stripe", content=b"{}")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "service_unavailable"
+
+
+async def test_stripe_webhook_400_on_bad_signature(monkeypatch, tmp_path):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.billing.verify_stripe_signature",
+        lambda body, sig, secret: False,
+    )
+    async with _stripe_client(monkeypatch, tmp_path) as client:
+        r = await client.post(
+            "/webhooks/stripe",
+            content=b'{"id":"evt_1"}',
+            headers={"stripe-signature": "t=1,v1=bad"},
+        )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_signature"
+
+
+async def test_stripe_webhook_400_on_invalid_json(monkeypatch, tmp_path):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.billing.verify_stripe_signature",
+        lambda body, sig, secret: True,
+    )
+    async with _stripe_client(monkeypatch, tmp_path) as client:
+        r = await client.post(
+            "/webhooks/stripe",
+            content=b"not json",
+            headers={"stripe-signature": "t=1,v1=ok"},
+        )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_json"
+
+
+async def test_stripe_webhook_200_ignored_for_unhandled_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.billing.verify_stripe_signature",
+        lambda body, sig, secret: True,
+    )
+    async with _stripe_client(monkeypatch, tmp_path) as client:
+        r = await client.post(
+            "/webhooks/stripe",
+            content=b'{"type":"some.other.event","data":{"object":{}}}',
+            headers={"stripe-signature": "t=1,v1=ok"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["received"] is True
+    # `outcome.processed` is False here → handler returns the ignored path
+    assert "ignored" in body or body.get("type") is None
+
+
+async def test_stripe_webhook_200_processed_for_subscription_created(monkeypatch, tmp_path):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.billing.verify_stripe_signature",
+        lambda body, sig, secret: True,
+    )
+
+    upserts = []
+
+    async def _capture(cid, status, plan_sku, cpe, raw):
+        upserts.append((cid, status, plan_sku, cpe))
+
+    monkeypatch.setattr("mcp_bookmarks.services.billing.upsert_from_stripe_event", _capture)
+
+    payload = (
+        b'{"type":"customer.subscription.created",'
+        b'"data":{"object":{"customer":"cus_123","status":"active",'
+        b'"items":{"data":[{"price":{"id":"price_x"}}]},'
+        b'"current_period_end":9999}}}'
+    )
+    async with _stripe_client(monkeypatch, tmp_path) as client:
+        r = await client.post(
+            "/webhooks/stripe",
+            content=payload,
+            headers={"stripe-signature": "t=1,v1=ok"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["received"] is True
+    assert body["type"] == "customer.subscription.created"
+    assert upserts == [("cus_123", "active", "price_x", "9999")]
+
+
+# ── Scraper-mock helpers (used by the api_save tests above) ──────────
+
+
+def _fake_og_factory(*, title: str | None, description: str = ""):
+    async def _fake(url: str):
+        from mcp_bookmarks.models import OGMetadata
+
+        return OGMetadata(url=url, title=title, description=description)
+
+    return _fake
+
+
+def _fake_article_factory(*, text: str, word_count: int):
+    async def _fake(url: str):
+        from mcp_bookmarks.models import ArticleContent
+
+        return ArticleContent(url=url, text=text, word_count=word_count)
+
+    return _fake
