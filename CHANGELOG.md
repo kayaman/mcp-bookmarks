@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Test coverage push round 2.** Lifts measured coverage from 57% → 79%
+  via 109 new tests across 8 new test files (`test_services_taxonomy`,
+  `test_services_billing`, `test_services_quota`, `test_services_usage`,
+  `test_auth`, `test_scraper`, `test_usage_meter`, plus
+  `test_api_rest` integration suite covering 6 REST routes and
+  `test_dynamodb_moto` integration suite covering DynamoDB CRUD + paged
+  search via moto). Also extends `test_stripe_util` and
+  `test_subscription_store` with their previously uncovered branches.
+- **CI coverage floor raised from 50% → 60%** (`--cov-fail-under=60`).
+- **`moto[dynamodb]>=5.0` dev dependency** for in-process DynamoDB testing.
+
+### Fixed
+
+- `services.taxonomy.create` no longer raises `KeyError` when logging
+  `tag_created` (renamed the `name` key in `extra={}` to `tag_name`;
+  `name` is a reserved `LogRecord` attribute).
+
 ## v1.0.0 — 2026-05-30
 
 This release closes the OSS-numbered backlog (WDN-391..401): standalone

@@ -1,9 +1,8 @@
 """subscription_store — Stripe subscription persistence helpers.
 
-Covers ``extract_subscription_fields`` (pure parsing) thoroughly, and the
-SQLite-backed branch of ``upsert_from_stripe_event`` via an in-memory DB.
-The DynamoDB branch is exercised by skipping it (no ``DYNAMODB_SUBSCRIPTIONS_TABLE``
-set) — see the anti-target list in CONTRIBUTING.md.
+Covers ``extract_subscription_fields`` (pure parsing) thoroughly, the
+SQLite-backed branch of ``upsert_from_stripe_event`` via an in-memory DB,
+and the DynamoDB branch via a moto v5 ``mock_aws`` fixture.
 """
 
 from __future__ import annotations
@@ -172,3 +171,101 @@ async def test_upsert_handles_missing_optional_fields(
         await db.close()
     assert row is not None
     assert row["customer_id"] == "cus_minimal"
+
+
+# ── upsert_from_stripe_event (DynamoDB path, moto-backed) ──────────
+
+
+async def test_upsert_writes_to_dynamo_when_table_set_and_mode_on(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """With DYNAMODB_SUBSCRIPTIONS_TABLE + DYNAMODB_MODE set, the SQLite branch is skipped."""
+    from moto import mock_aws
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("DYNAMODB_SUBSCRIPTIONS_TABLE", "test-subs")
+    monkeypatch.setenv("DYNAMODB_MODE", "true")
+
+    with mock_aws():
+        import boto3
+
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="test-subs",
+            KeySchema=[{"AttributeName": "customerId", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "customerId", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        await subscription_store.upsert_from_stripe_event(
+            customer_id="cus_dynamo",
+            status="active",
+            plan_sku="price_dyn",
+            current_period_end="9999",
+            raw_obj={"id": "sub_dyn"},
+        )
+
+        # Read back via boto3 directly to verify the item shape.
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("test-subs")
+        item = table.get_item(Key={"customerId": "cus_dynamo"})["Item"]
+        assert item["customerId"] == "cus_dynamo"
+        assert item["status"] == "active"
+        assert item["planSku"] == "price_dyn"
+        assert item["currentPeriodEnd"] == "9999"
+        # rawJson is JSON-encoded
+        import json as _json
+
+        assert _json.loads(item["rawJson"]) == {"id": "sub_dyn"}
+        assert "updatedAt" in item
+
+
+async def test_upsert_dynamo_branch_also_writes_sqlite_when_mode_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """DYNAMODB_SUBSCRIPTIONS_TABLE set BUT DYNAMODB_MODE off → both backends written."""
+    from moto import mock_aws
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("DYNAMODB_SUBSCRIPTIONS_TABLE", "test-subs")
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+    db_path = tmp_path / "subs_hybrid.db"
+    monkeypatch.setenv("BOOKMARKS_DB_PATH", str(db_path))
+
+    with mock_aws():
+        import boto3
+
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="test-subs",
+            KeySchema=[{"AttributeName": "customerId", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "customerId", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        await subscription_store.upsert_from_stripe_event(
+            customer_id="cus_both",
+            status="active",
+            plan_sku="price_x",
+            current_period_end="1",
+            raw_obj={},
+        )
+
+        # DynamoDB has the item
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("test-subs")
+        assert table.get_item(Key={"customerId": "cus_both"}).get("Item") is not None
+
+    # SQLite was also written (the `if dynamo_app: return` short-circuit is OFF)
+    from mcp_bookmarks.db import Database
+
+    db = Database(db_path)
+    await db.connect()
+    try:
+        row = await db.get_subscription_state("cus_both")
+    finally:
+        await db.close()
+    assert row is not None
+    assert row["customer_id"] == "cus_both"

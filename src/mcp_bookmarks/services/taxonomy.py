@@ -50,7 +50,7 @@ async def create(
     if existing:
         return existing, False
     tag = await db.create_tag(slug=slug, name=name, description=description)
-    log.info("tag_created", extra={"slug": slug, "name": name})
+    log.info("tag_created", extra={"slug": slug, "tag_name": name})
     return tag, True
 
 
