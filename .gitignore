@@ -17,3 +17,9 @@ terraform/terraform.tfvars
 # Rust build artifacts
 rust/*/target/
 rust/topic-compiler/Cargo.lock
+
+# Coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

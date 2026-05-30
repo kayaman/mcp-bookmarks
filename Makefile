@@ -32,6 +32,11 @@ test:  ## Run the default unit + integration suite (no live).
 test-live:  ## Run the opt-in live suite (network / AWS).
 	$(UV) run --python $(PYTHON) python -m pytest tests/live -q -m live
 
+.PHONY: coverage
+coverage:  ## Run the test suite with HTML coverage report (open htmlcov/index.html).
+	$(UV) run --python $(PYTHON) python -m pytest tests/unit tests/integration \
+		--cov=src/mcp_bookmarks --cov-report=term-missing --cov-report=html
+
 .PHONY: lint
 lint:  ## Lint without modifying files (Ruff).
 	ruff check .
