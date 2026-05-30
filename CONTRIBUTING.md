@@ -38,7 +38,7 @@ shouldn't need a round trip to GitHub to know your change is clean:
 | Lint | `make lint` | Ruff: `E`, `F`, `I`, `B`, `UP`, `SIM`, `RUF` codes |
 | Format | `make format-check` | Ruff format (`make format` applies it) |
 | Type-check | `make typecheck` | mypy on `src/mcp_bookmarks/` — pragmatic config (not strict) |
-| Tests | `make test` | pytest unit + integration; live tests are opt-in; coverage gated at 50% via `pytest-cov` |
+| Tests | `make test` | pytest unit + integration; live tests are opt-in; coverage gated at 60% via `pytest-cov` |
 
 Pre-commit hooks (Ruff + mypy on changed files only) come from
 `.pre-commit-config.yaml`. Install once with `make pre-commit-install`;
@@ -47,8 +47,8 @@ they fire on every `git commit` after that.
 ## Test coverage
 
 Coverage is measured by `pytest-cov` on every `pytest` run; the gate
-fails the build when total coverage drops below **50%**
-(`--cov-fail-under=50` in `pyproject.toml`). Current baseline is ~57%.
+fails the build when total coverage drops below **60%**
+(`--cov-fail-under=60` in `pyproject.toml`). Current baseline is ~79%.
 
 ```bash
 make test       # gate-enforced, terminal report
@@ -58,6 +58,12 @@ make coverage   # full report + HTML at htmlcov/index.html
 The floor is a ratchet: do not lower it. When you add tests that lift
 the total, the next PR effectively raises the floor by virtue of not
 regressing.
+
+DynamoDB tests use [`moto`](https://docs.getmoto.org/)'s in-memory
+mock (`from moto import mock_aws`). Don't reach for the real AWS SDK
+in tests — instantiate `boto3` *inside* a `with mock_aws():` block so
+the call lands on the mock. See `tests/integration/test_dynamodb_moto.py`
+for the canonical pattern.
 
 ### What we chose not to test (and why)
 
@@ -69,15 +75,16 @@ here so future contributors don't re-investigate without context:
   uvicorn as a **subprocess** — `coverage.py` can't track child
   processes without a `sitecustomize.py` + `COVERAGE_PROCESS_START`
   setup. That refactor would let us re-include server.py honestly; in
-  the meantime, omitting keeps the measured % truthful. See
-  `[tool.coverage.run] omit` in `pyproject.toml` for the full list.
-- **`dynamodb.py`** (~28%) — needs `moto` for in-process mocking; the
-  fixture cost outweighs the benefit until DynamoDB-mode usage justifies.
+  the meantime, omitting keeps the measured % truthful.
 - **`bearer_auth.py`** (~48%) — JWT/OAuth introspection paths would
   need mock identity-provider responses; not worth the maintenance
   cost yet.
 - **`llm_ensemble.py`** (~32%) — retry/failover branches need contrived
   failure scenarios; cost > value until we see real ensemble bugs.
+- **`api.py` `stripe_webhook` + `ai_gateway_page` + `bookmarklet_page`
+  + `static_font_jetbrains_mono`** — webhook needs signature mocking
+  (separate Stripe-integration PR); the other three are mostly
+  HTML/binary rendering where E2E is more valuable than unit tests.
 
 If you're adding code in one of these areas, adding tests at the same
 time is *encouraged* but not required by the gate.
