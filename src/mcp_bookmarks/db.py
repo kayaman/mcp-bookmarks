@@ -253,8 +253,17 @@ class Database:
         description: str | None = None,
         image_url: str | None = None,
         site_name: str | None = None,
+        *,
+        # The three kwargs below are DynamoDB-only metadata that the MCP
+        # `save_bookmark` tool may pass through. SQLite has no native column
+        # for them today; we accept-and-ignore so the protocol surface is
+        # uniform (no more cast(Any, db) at the call site).
+        bookmark_type: str | None = None,
+        flow_id: str | None = None,
+        source: str | None = None,
     ) -> Bookmark:
         """Insert or update a bookmark by URL within this tenant."""
+        _ = (bookmark_type, flow_id, source)  # silently ignored on SQLite
         now = datetime.now(UTC).isoformat()
         cursor = await self.db.execute(
             """INSERT INTO bookmarks (url, tenant_id, title, description, image_url, site_name, updated_at)

@@ -134,6 +134,12 @@ class BookmarkBackend(Protocol):
         description: str | None = None,
         image_url: str | None = None,
         site_name: str | None = None,
+        *,
+        # DynamoDB stores these as camelCase columns; SQLite accepts-and-ignores.
+        # See ADR-0001 / ADR-0004 for the schema asymmetry.
+        bookmark_type: str | None = None,
+        flow_id: str | None = None,
+        source: str | None = None,
     ) -> Bookmark: ...
 
     async def get_bookmark_by_id(self, bookmark_id: int | str) -> Bookmark | None: ...

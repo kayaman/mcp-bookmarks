@@ -23,11 +23,9 @@ Webhook (mount at app root):
     POST /webhooks/stripe — Stripe Billing events (requires STRIPE_WEBHOOK_SECRET)
 """
 
-import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, cast
 
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -50,14 +48,15 @@ from .backend import (
     BookmarkBackend,
     UnsupportedCapability,
     backend_capabilities_payload,
-    require_capability,
 )
 from .db import DEFAULT_DB_PATH, Database
-from .scraper import extract_article_content, extract_og_metadata
 from .security_headers import compute_script_hash
-from .stripe_util import verify_stripe_signature
-from .subscription_store import extract_subscription_fields, upsert_from_stripe_event
-from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
+from .services import billing as billing_service
+from .services import bookmark as bookmark_service
+from .services import quota as quota_service
+from .services import taxonomy as taxonomy_service
+from .services import usage as usage_service
+from .usage_meter import monthly_limit_enabled
 
 log = logging.getLogger(__name__)
 
@@ -78,25 +77,18 @@ def _effective_tenant(request: Request) -> str:
 
 
 async def _check_rest_quota(tenant: str) -> JSONResponse | None:
-    if not monthly_limit_enabled():
-        return None
-    ok, used, limit = await check_quota_for_backend(_get_db_path(), tenant)
-    if ok:
-        return None
-    log.warning(
-        "quota_denied",
-        extra={"tenant_id": tenant, "used": used, "limit": limit, "surface": "rest"},
+    """Thin shim — delegates to ``quota_service.check`` + ``rest_block_response``."""
+    ok, used, limit = await quota_service.check(
+        db_path=_get_db_path(), tenant_id=tenant, surface="rest"
     )
-    return error_response(
-        ErrorCode.RATE_LIMITED,
-        "Monthly usage quota exceeded for this tenant",
-        status=429,
-        details={"used": used, "limit": limit},
-    )
+    return None if ok else quota_service.rest_block_response(used, limit)
 
 
 async def _record_rest_usage(tenant: str, event_type: str, metadata: dict | None = None) -> None:
-    await record_usage_for_backend(_get_db_path(), event_type, tenant, metadata)
+    """Thin shim — delegates to ``quota_service.record``."""
+    await quota_service.record(
+        db_path=_get_db_path(), event_type=event_type, tenant_id=tenant, metadata=metadata
+    )
 
 
 async def _db(request: Request | None = None) -> BookmarkBackend:
@@ -162,34 +154,11 @@ async def api_save(request: Request) -> JSONResponse:
 
     db = await _db(request)
     try:
-        try:
-            og = await extract_og_metadata(url)
-        except (OSError, ValueError) as exc:
-            # Network / parse failure at the scraper boundary. Persist the bookmark
-            # with just the URL so the user's intent is recorded; the page can be
-            # re-fetched later via extract_content.
-            log.warning("og_metadata_extraction_failed", extra={"url": url, "error": str(exc)})
-            from .models import OGMetadata
-
-            og = OGMetadata(url=url)
-
-        bookmark = await db.upsert_bookmark(
-            url=og.url,
-            title=og.title,
-            description=og.description,
-            image_url=og.image,
-            site_name=og.site_name,
+        bookmark, og = await bookmark_service.save_with_metadata(db=db, url=url)
+        assert bookmark.id is not None  # upsert_bookmark always returns an id
+        word_count = await bookmark_service.extract_and_persist_content(
+            db=db, bookmark_id=bookmark.id, url=url
         )
-
-        try:
-            article = await extract_article_content(url)
-            assert bookmark.id is not None  # upsert_bookmark always returns an id
-            await db.set_bookmark_content(bookmark.id, article.text, article.word_count)
-            word_count = article.word_count
-        except (OSError, ValueError) as exc:
-            # Same boundary as the OG fallback above.
-            log.warning("article_extraction_failed", extra={"url": url, "error": str(exc)})
-            word_count = 0
 
         await _record_rest_usage(tenant, "rest_bookmark_save", {"url": og.url})
 
@@ -311,15 +280,17 @@ async def api_create_tag_rest(request: Request) -> JSONResponse:
     description = body_model.description.strip()
     db = await _db(request)
     try:
-        existing = await db.get_tag_by_slug(slug)
-        if existing:
+        tag, created = await taxonomy_service.create(
+            db=db, slug=slug, name=name, description=description
+        )
+        if not created:
             return error_response(
                 ErrorCode.CONFLICT,
                 f"Tag '{slug}' already exists",
                 status=409,
                 details={"slug": slug},
             )
-        tag = await db.create_tag(slug=slug, name=name, description=description)
+        assert tag is not None  # `created=True` implies `tag` is not None
         await _record_rest_usage(tenant, "rest_create_tag", {"slug": slug})
         return JSONResponse(
             {
@@ -348,14 +319,16 @@ async def api_bookmark_summary(request: Request) -> JSONResponse:
     assert body_model is not None  # parse_request_body invariant
     db = await _db(request)
     try:
-        bm = await db.get_bookmark_by_id(bookmark_id)
+        bm = await bookmark_service.get_or_none(db=db, bookmark_id=bookmark_id)
         if not bm:
             return error_response(
                 ErrorCode.NOT_FOUND,
                 f"Bookmark {bookmark_id} not found",
                 status=404,
             )
-        await db.set_bookmark_summary(bookmark_id, body_model.summary)
+        await bookmark_service.set_summary(
+            db=db, bookmark_id=bookmark_id, summary=body_model.summary
+        )
         await _record_rest_usage(tenant, "rest_set_summary", {"bookmark_id": str(bookmark_id)})
         return JSONResponse({"status": "ok", "bookmark_id": bookmark_id})
     finally:
@@ -376,7 +349,7 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
     slugs = body_model.tag_slugs
     db = await _db(request)
     try:
-        bm = await db.get_bookmark_by_id(bookmark_id)
+        bm = await bookmark_service.get_or_none(db=db, bookmark_id=bookmark_id)
         if not bm:
             return error_response(
                 ErrorCode.NOT_FOUND,
@@ -384,7 +357,7 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
                 status=404,
             )
         try:
-            await db.tag_bookmark(bookmark_id, slugs)
+            await taxonomy_service.tag_bookmark(db=db, bookmark_id=bookmark_id, tag_slugs=slugs)
         except ValueError as exc:
             return error_response(
                 ErrorCode.INVALID_REQUEST,
@@ -411,7 +384,7 @@ async def api_usage(request: Request) -> JSONResponse:
     db = await _db(request)
     try:
         try:
-            require_capability(db, "usage_metering", method="count_usage_events_month")
+            n = await usage_service.count_events_this_month(db=db, tenant_id=tenant)
         except UnsupportedCapability as exc:
             return error_response(
                 ErrorCode.FORBIDDEN,
@@ -419,8 +392,6 @@ async def api_usage(request: Request) -> JSONResponse:
                 status=403,
                 details=exc.to_envelope()["details"],
             )
-        # count_usage_events_month is SQLite-only (usage_metering capability above).
-        n = await cast(Any, db).count_usage_events_month(tenant)
     finally:
         await db.close()
     limit = int(os.environ.get("MCP_MONTHLY_USAGE_LIMIT", "0"))
@@ -891,47 +862,27 @@ async def stripe_webhook(request: Request) -> JSONResponse:
             details={"hint": "Set STRIPE_WEBHOOK_SECRET"},
         )
 
-    body = await request.body()
-    sig = request.headers.get("stripe-signature")
-    if not verify_stripe_signature(body, sig, secret):
+    outcome, err = await billing_service.process_signed_payload(
+        body=await request.body(),
+        signature=request.headers.get("stripe-signature"),
+        secret=secret,
+    )
+    if err == "invalid_signature":
         return error_response(
             ErrorCode.INVALID_SIGNATURE,
             "Stripe-Signature header did not match the payload",
             status=400,
         )
-
-    try:
-        event = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+    if err == "invalid_json":
         return error_response(
             ErrorCode.INVALID_JSON,
             "Webhook body is not valid JSON",
             status=400,
-            details={"reason": str(exc)},
         )
-
-    etype = event.get("type")
-    obj = event.get("data", {}).get("object")
-    if not isinstance(obj, dict):
-        log.info("stripe_webhook_ignored", extra={"reason": "no_data_object", "type": etype})
-        return JSONResponse({"received": True, "ignored": True})
-
-    if etype in (
-        "customer.subscription.created",
-        "customer.subscription.updated",
-        "customer.subscription.deleted",
-    ):
-        cid, status, plan_sku, cpe = extract_subscription_fields(obj)
-        if cid:
-            await upsert_from_stripe_event(cid, status, plan_sku, cpe, obj)
-        log.info(
-            "stripe_webhook_processed",
-            extra={"type": etype, "customer_id": cid, "status": status, "plan": plan_sku},
-        )
-        return JSONResponse({"received": True, "type": etype})
-
-    log.info("stripe_webhook_ignored", extra={"reason": "unhandled_type", "type": etype})
-    return JSONResponse({"received": True, "ignored": etype})
+    assert outcome is not None  # err is None → outcome populated
+    if outcome.processed:
+        return JSONResponse({"received": True, "type": outcome.event_type})
+    return JSONResponse({"received": True, "ignored": outcome.event_type or True})
 
 
 async def bookmarklet_page(request: Request) -> HTMLResponse:

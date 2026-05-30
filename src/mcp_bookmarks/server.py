@@ -18,15 +18,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from .backend import BookmarkBackend, UnsupportedCapability, require_capability
+from .backend import BookmarkBackend, UnsupportedCapability
 from .db import DEFAULT_DB_PATH, Database, _coerce_sqlite_bookmark_id
-from .models import Bookmark, OGMetadata, Tag
-from .scraper import extract_article_content, extract_og_metadata
-from .usage_meter import check_quota_for_backend, monthly_limit_enabled, record_usage_for_backend
+from .models import Bookmark, Tag
+from .scraper import extract_article_content
+from .services import bookmark as bookmark_service
+from .services import embedding as embedding_service
+from .services import quota as quota_service
+from .services import search as search_service
 
 # ── Lifespan: DB connection lifecycle ─────────────────────────────
 
@@ -154,16 +156,25 @@ def _usage_db_path() -> Path:
 
 
 async def _mcp_quota_block() -> str | None:
-    if not monthly_limit_enabled():
-        return None
-    ok, used, lim = await check_quota_for_backend(_usage_db_path(), _mcp_tenant_id())
-    if ok:
-        return None
-    return json.dumps({"error": "monthly_quota_exceeded", "used": used, "limit": lim})
+    """Returns a JSON string when the tenant is over quota; None otherwise.
+
+    Thin shim — delegates to ``quota_service`` so the REST + MCP surfaces
+    share quota state and structured-log behavior.
+    """
+    ok, used, limit = await quota_service.check(
+        db_path=_usage_db_path(), tenant_id=_mcp_tenant_id(), surface="mcp"
+    )
+    return None if ok else quota_service.mcp_block_string(used, limit)
 
 
 async def _mcp_record(event_type: str, metadata: dict | None = None) -> None:
-    await record_usage_for_backend(_usage_db_path(), event_type, _mcp_tenant_id(), metadata)
+    """Thin shim — delegates to ``quota_service.record``."""
+    await quota_service.record(
+        db_path=_usage_db_path(),
+        event_type=event_type,
+        tenant_id=_mcp_tenant_id(),
+        metadata=metadata,
+    )
 
 
 def _bookmark_tool_id(b: Bookmark) -> int | str:
@@ -207,21 +218,10 @@ async def save_bookmark(
     db = _get_db(ctx)
 
     await ctx.info(f"Fetching metadata for {url}")
-    try:
-        og = await extract_og_metadata(url)
-    except Exception as e:
-        og = OGMetadata(url=url)
-        await ctx.warning(f"Could not fetch OG metadata: {e}")
-
-    # bookmark_type / flow_id / source are DynamoDB extensions to upsert_bookmark.
-    # SQLite ignores them; the cast suppresses the protocol-vs-concrete mismatch.
-    # Real fix lives in WDN-393 phase 2 (handler/service extraction).
-    bookmark = await cast(Any, db).upsert_bookmark(
-        url=og.url,
-        title=title or og.title,
-        description=og.description,
-        image_url=og.image,
-        site_name=og.site_name,
+    bookmark, _og = await bookmark_service.save_with_metadata(
+        db=db,
+        url=url,
+        title=title,
         bookmark_type=bookmarkType,
         flow_id=flowId,
         source=source,
@@ -278,6 +278,8 @@ async def extract_content(bookmark_id: int | str, ctx: Context) -> str:
         )
 
     await ctx.info(f"Extracting article content from {bookmark.url}")
+    # bookmark_service handles the scraper boundary + structured log + persistence.
+    # Returns word count 0 on failure (extraction is best-effort here).
     try:
         article = await extract_article_content(bookmark.url)
     except Exception as e:
@@ -312,12 +314,11 @@ async def set_bookmark_body(bookmark_id: int | str, text: str, ctx: Context) -> 
     if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
-    bookmark = await db.get_bookmark_by_id(bookmark_id)
+    bookmark = await bookmark_service.get_or_none(db=db, bookmark_id=bookmark_id)
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"})
     body = text or ""
-    wc = len(body.split())
-    await db.set_bookmark_content(bookmark_id, body, wc)
+    wc = await bookmark_service.set_body(db=db, bookmark_id=bookmark_id, text=body)
     await _mcp_record("mcp_set_bookmark_body", {"bookmark_id": str(bookmark_id)})
     preview = body[:2000] + "..." if len(body) > 2000 else body
     return json.dumps(
@@ -527,15 +528,9 @@ async def search_bookmarks(
     if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
-    if db.capabilities.paged_search:
-        # search_bookmarks_paged lives only on DynamoDBDatabase; cap-gate above.
-        bookmarks, next_cursor = await cast(Any, db).search_bookmarks_paged(
-            query=query, tag=tag, limit=limit, cursor=cursor
-        )
-    else:
-        # SQLite (single-tenant local) doesn't paginate; return everything once.
-        bookmarks = await db.search_bookmarks(query=query, tag=tag, limit=limit)
-        next_cursor = None
+    bookmarks, next_cursor = await search_service.search_bookmarks(
+        db=db, query=query, tag=tag, limit=limit, cursor=cursor
+    )
     await _mcp_record("mcp_search_bookmarks", {"query": query, "tag": tag})
 
     items = []
@@ -823,11 +818,7 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
     if qb := await _mcp_quota_block():
         return qb
     db = _get_db(ctx)
-    try:
-        require_capability(db, "semantic_search", method="index_bookmark_embedding")
-    except UnsupportedCapability as exc:
-        return json.dumps({"error": exc.to_envelope()}, ensure_ascii=False)
-    bookmark = await db.get_bookmark_by_id(bookmark_id)
+    bookmark = await bookmark_service.get_or_none(db=db, bookmark_id=bookmark_id)
     if not bookmark:
         return json.dumps({"error": f"Bookmark {bookmark_id} not found"}, ensure_ascii=False)
     bid = _coerce_sqlite_bookmark_id(bookmark_id)
@@ -841,18 +832,18 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
         return json.dumps(
             {"error": "No text to embed; run extract_content first."}, ensure_ascii=False
         )
-    from .rag import embed_model, embed_texts
 
     try:
-        vec = (await embed_texts([text]))[0]
+        model, chars_used = await embedding_service.index_bookmark(
+            db=db, bookmark_id=bid, text=text
+        )
+    except UnsupportedCapability as exc:
+        return json.dumps({"error": exc.to_envelope()}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-    model = embed_model()
-    # upsert_bookmark_embedding is SQLite-only (semantic_search capability).
-    await cast(Any, db).upsert_bookmark_embedding(bid, model, vec)
     await _mcp_record("mcp_index_bookmark_embedding", {"bookmark_id": str(bid)})
     return json.dumps(
-        {"status": "indexed", "bookmark_id": bid, "model": model, "chars_used": len(text)},
+        {"status": "indexed", "bookmark_id": bid, "model": model, "chars_used": chars_used},
         ensure_ascii=False,
     )
 
@@ -864,19 +855,12 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
         return qb
     db = _get_db(ctx)
     try:
-        require_capability(db, "semantic_search", method="semantic_search_bookmarks")
+        ranked, model = await embedding_service.semantic_search(db=db, query=query, limit=limit)
     except UnsupportedCapability as exc:
         return json.dumps({"error": exc.to_envelope()}, ensure_ascii=False)
-    from .rag import cosine_similarity, embed_model, embed_texts
-
-    try:
-        qv = (await embed_texts([query]))[0]
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-    model = embed_model()
-    # get_all_embeddings is SQLite-only (semantic_search capability).
-    rows = await cast(Any, db).get_all_embeddings(model)
-    if not rows:
+    if not ranked:
         return json.dumps(
             {
                 "results": [],
@@ -885,12 +869,9 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
             ensure_ascii=False,
             indent=2,
         )
-    scored = [(bid, cosine_similarity(qv, vec)) for bid, vec in rows]
-    scored.sort(key=lambda x: -x[1])
-    top = scored[: max(1, min(limit, 50))]
     out: list[dict] = []
-    for bid, score in top:
-        bk = await db.get_bookmark_by_id(bid)
+    for bid, score in ranked:
+        bk = await bookmark_service.get_or_none(db=db, bookmark_id=bid)
         if not bk:
             continue
         out.append(
@@ -905,7 +886,7 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
         )
     await _mcp_record("mcp_semantic_search_bookmarks", {"limit": limit})
     return json.dumps(
-        {"query": query, "model": model, "total_indexed": len(rows), "results": out},
+        {"query": query, "model": model, "total_indexed": len(ranked), "results": out},
         ensure_ascii=False,
         indent=2,
     )
