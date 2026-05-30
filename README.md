@@ -292,6 +292,7 @@ mcp-bookmarks/
 
 ## Documentation index
 
+- **Portfolio tour** — [`docs/demo/portfolio-tour.md`](docs/demo/portfolio-tour.md): 5-minute reviewer walkthrough — reading order, engineering depth highlights, end-to-end MCP transcript, measured benchmarks
 - **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md): five commands to a working dev env, CI gates, branch + commit conventions
 - **Releasing** — [`RELEASING.md`](RELEASING.md): six-step release checklist (changelog, version bump, tag, image push, terraform apply, smoke)
 - **Go live** — [`docs/go-live.md`](docs/go-live.md): single-page operator walkthrough for the first AWS deployment (tfvars, ECR image, ALB + ACM, ECS, smoke test, optional Stripe + Lambda)
