@@ -38,11 +38,49 @@ shouldn't need a round trip to GitHub to know your change is clean:
 | Lint | `make lint` | Ruff: `E`, `F`, `I`, `B`, `UP`, `SIM`, `RUF` codes |
 | Format | `make format-check` | Ruff format (`make format` applies it) |
 | Type-check | `make typecheck` | mypy on `src/mcp_bookmarks/` — pragmatic config (not strict) |
-| Tests | `make test` | pytest unit + integration; live tests are opt-in |
+| Tests | `make test` | pytest unit + integration; live tests are opt-in; coverage gated at 50% via `pytest-cov` |
 
 Pre-commit hooks (Ruff + mypy on changed files only) come from
 `.pre-commit-config.yaml`. Install once with `make pre-commit-install`;
 they fire on every `git commit` after that.
+
+## Test coverage
+
+Coverage is measured by `pytest-cov` on every `pytest` run; the gate
+fails the build when total coverage drops below **50%**
+(`--cov-fail-under=50` in `pyproject.toml`). Current baseline is ~57%.
+
+```bash
+make test       # gate-enforced, terminal report
+make coverage   # full report + HTML at htmlcov/index.html
+```
+
+The floor is a ratchet: do not lower it. When you add tests that lift
+the total, the next PR effectively raises the floor by virtue of not
+regressing.
+
+### What we chose not to test (and why)
+
+These modules are deliberately under-covered in this round — listed
+here so future contributors don't re-investigate without context:
+
+- **`server.py`** is excluded from coverage measurement entirely. It is
+  exercised by `tests/integration/test_transports.py`, which spawns
+  uvicorn as a **subprocess** — `coverage.py` can't track child
+  processes without a `sitecustomize.py` + `COVERAGE_PROCESS_START`
+  setup. That refactor would let us re-include server.py honestly; in
+  the meantime, omitting keeps the measured % truthful. See
+  `[tool.coverage.run] omit` in `pyproject.toml` for the full list.
+- **`dynamodb.py`** (~28%) — needs `moto` for in-process mocking; the
+  fixture cost outweighs the benefit until DynamoDB-mode usage justifies.
+- **`bearer_auth.py`** (~48%) — JWT/OAuth introspection paths would
+  need mock identity-provider responses; not worth the maintenance
+  cost yet.
+- **`llm_ensemble.py`** (~32%) — retry/failover branches need contrived
+  failure scenarios; cost > value until we see real ensemble bugs.
+
+If you're adding code in one of these areas, adding tests at the same
+time is *encouraged* but not required by the gate.
 
 ## Proposing a change
 
