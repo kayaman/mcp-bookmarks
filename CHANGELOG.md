@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## v1.0.1 — 2026-05-30
+
+Patch release: fixes a `KeyError` in `services.taxonomy.create` when any
+structured-log handler is configured, plus a large test-coverage push
+(measured coverage 57% → 79%) and a 60% CI floor.
+
 ### Added
 
 - **Test coverage push round 2.** Lifts measured coverage from 57% → 79%
