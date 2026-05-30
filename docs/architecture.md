@@ -97,21 +97,47 @@ Key design decisions:
 | `usage_metering` | ✅ | ❌ | DynamoDB delegates to optional `DYNAMODB_USAGE_TABLE` |
 | `subscription_storage` | ✅ | ❌ | DynamoDB delegates to optional `DYNAMODB_SUBSCRIPTIONS_TABLE` |
 
-## Phase 2 — handler / service extraction (not in this PR)
+## Application services (Phase 2 of WDN-393)
 
-Tasks (still on WDN-393):
+Handler logic that used to live inline in `server.py` (MCP tools) and
+`api.py` (REST handlers) is now extracted into
+[`src/mcp_bookmarks/services/`](../src/mcp_bookmarks/services/). Each
+module owns a single responsibility; handlers are thin
+parse-and-serialize layers.
 
-- Extract a `BookmarkService` (save → extract → tag → summary) used by
-  both `server.py` and `api.py`. The MCP and REST handlers should only
-  parse arguments and serialize results — no DB calls, no quota checks.
-- Extract a `TaxonomyService` for tag CRUD + merge + audit.
-- Extract a `QuotaService` that wraps `usage_meter.check_quota_for_backend`
-  and `record_usage_for_backend`, presenting a single backend-agnostic
-  surface to the handlers.
-- Extract a `BillingService` around `stripe_util` + `subscription_store`.
+| Module | Responsibility | Capability gates inside? |
+|---|---|---|
+| [`services/quota.py`](../src/mcp_bookmarks/services/quota.py) | `check`, `record`, `rest_block_response`, `mcp_block_string` | no (always runs) |
+| [`services/bookmark.py`](../src/mcp_bookmarks/services/bookmark.py) | `save_with_metadata`, `extract_and_persist_content`, `set_summary`, `set_body`, `get_or_none`, `delete` | no |
+| [`services/taxonomy.py`](../src/mcp_bookmarks/services/taxonomy.py) | tag CRUD + merge + `tag_bookmark` / `untag_bookmark` | no |
+| [`services/search.py`](../src/mcp_bookmarks/services/search.py) | `search_bookmarks` (returns `(items, next_cursor)`) | **yes** — `paged_search` |
+| [`services/embedding.py`](../src/mcp_bookmarks/services/embedding.py) | `index_bookmark`, `semantic_search` | **yes** — `semantic_search` |
+| [`services/usage.py`](../src/mcp_bookmarks/services/usage.py) | `count_events_this_month` | **yes** — `usage_metering` |
+| [`services/billing.py`](../src/mcp_bookmarks/services/billing.py) | `process_signed_payload` (Stripe webhook event dispatch) | no |
 
-The acceptance criterion "Transport code no longer owns persistence or
-quota logic directly" closes when Phase 2 ships.
+Key invariants:
+
+- **Capability gates live in services, not handlers.** The four
+  `cast(Any, db)` sites that used to live in transport code (per
+  WDN-394) are gone; the casts now sit next to the
+  `require_capability` call in the service module, where the
+  protocol-vs-concrete gap is documented.
+- **Quota state is one call.** `quota_service.check` returns
+  `(ok, used, limit)`; the REST and MCP surfaces serialize the block
+  differently (envelope vs JSON string) but share one call site for
+  the limit check + structured-log event.
+- **The scraper boundary lives in `bookmark.save_with_metadata`.**
+  Both `POST /api/save` and the MCP `save_bookmark` tool route
+  through it; the OG-fallback log only fires from one place.
+
+Acceptance (per WDN-393) closes with this PR:
+
+- [x] Core workflows (save, extract, tag, summary, search, usage) are
+      application services.
+- [x] Storage backends conform to `BookmarkBackend` with capability
+      flags (Phase 1).
+- [x] Transport code no longer owns persistence or quota logic directly.
+- [x] Existing tests still pass (139 unit + integration).
 
 ## Related ADRs and tickets
 
