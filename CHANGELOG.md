@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## v1.0.0 — 2026-05-30
+
+This release closes the OSS-numbered backlog (WDN-391..401): standalone
+open-source narrative, dual-mode storage with capability flags, REST
+envelope, structured logging, seven ADRs, hardened Terraform, Lighthouse
+100/100/100/100, services extraction, release engineering, and a
+portfolio tour doc.
+
 ### Added
 
-- **OSS roadmap PRs (WDN-391 → WDN-400).** Standalone open-source narrative,
+- **OSS roadmap PRs (WDN-391 → WDN-401).** Standalone open-source narrative,
   README rewrite, deterministic test layout (unit/integration/live split),
   BookmarkBackend protocol + capability flags, REST envelope + Pydantic
   request validation, Terraform IAM scoping + alarms + infra docs,
@@ -30,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, environment separation, IAM scoping.
 - **`docs/go-live.md`** single-page operator walkthrough for the first
   AWS deployment (tfvars, ECR image, ALB + ACM, ECS, smoke test).
+- **`docs/demo/portfolio-tour.md`** 5-minute reviewer walkthrough:
+  reading order, seven engineering-depth highlights with file:line
+  evidence, end-to-end MCP transcript (save → extract → tag → semantic
+  search), and measured benchmarks (cold start 614ms; `/health` p50
+  1.45ms; `/ready` p50 3.22ms).
 - **`docs/adr/`** seven Architecture Decision Records (0001..0007)
   covering dual-mode storage, single-app transports, quota design,
   capability flags, vector roadmap, deploy boundary, multi-tenancy.
