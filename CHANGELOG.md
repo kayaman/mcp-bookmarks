@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Test coverage push round 3.** Lifts measured coverage from 79% → 90%
+  via 70 new tests. Extends `test_api_rest.py` with `api_save`,
+  `api_bookmarks` list/search, `api_tags`, `api_ensemble`,
+  `stripe_webhook`, `api_stats`, and the `TenantAuthMiddleware`
+  auth-required path. Adds a new `test_bearer_auth.py` covering
+  Cognito JWT verification (with monkeypatched `jwt.decode`), the
+  `bm_v1_*` scoped-token DynamoDB lookup (via moto, including the
+  GSI-Query → Scan fallback), and the middleware short-circuit rules.
+  Extends `test_dynamodb_moto.py` with `untag_bookmark`, all
+  `update_tag` branches, `merge_tags` error paths, `get_full_export`,
+  `search_tags` empty paths, the `_dynamo_key(int)` defensive guard,
+  and the corrupt-cursor recovery path.
+- **CI coverage floor raised from 60% → 85%** (`--cov-fail-under=85`).
+
+### Fixed
+
+- `dynamodb.DynamoDBDatabase.update_tag` no longer raises `AttributeError`
+  when only `new_description` is provided (the boto3 transformer can't
+  handle `ExpressionAttributeNames=None`; now only included when
+  non-empty). Surfaced by the new moto-backed update-tag tests.
+
 ## v1.0.1 — 2026-05-30
 
 Patch release: fixes a `KeyError` in `services.taxonomy.create` when any

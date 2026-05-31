@@ -38,7 +38,7 @@ shouldn't need a round trip to GitHub to know your change is clean:
 | Lint | `make lint` | Ruff: `E`, `F`, `I`, `B`, `UP`, `SIM`, `RUF` codes |
 | Format | `make format-check` | Ruff format (`make format` applies it) |
 | Type-check | `make typecheck` | mypy on `src/mcp_bookmarks/` — pragmatic config (not strict) |
-| Tests | `make test` | pytest unit + integration; live tests are opt-in; coverage gated at 60% via `pytest-cov` |
+| Tests | `make test` | pytest unit + integration; live tests are opt-in; coverage gated at 85% via `pytest-cov` |
 
 Pre-commit hooks (Ruff + mypy on changed files only) come from
 `.pre-commit-config.yaml`. Install once with `make pre-commit-install`;
@@ -47,8 +47,8 @@ they fire on every `git commit` after that.
 ## Test coverage
 
 Coverage is measured by `pytest-cov` on every `pytest` run; the gate
-fails the build when total coverage drops below **60%**
-(`--cov-fail-under=60` in `pyproject.toml`). Current baseline is ~79%.
+fails the build when total coverage drops below **85%**
+(`--cov-fail-under=85` in `pyproject.toml`). Current baseline is ~90%.
 
 ```bash
 make test       # gate-enforced, terminal report
@@ -67,8 +67,8 @@ for the canonical pattern.
 
 ### What we chose not to test (and why)
 
-These modules are deliberately under-covered in this round — listed
-here so future contributors don't re-investigate without context:
+These modules are deliberately under-covered — listed here so future
+contributors don't re-investigate without context:
 
 - **`server.py`** is excluded from coverage measurement entirely. It is
   exercised by `tests/integration/test_transports.py`, which spawns
@@ -76,15 +76,17 @@ here so future contributors don't re-investigate without context:
   processes without a `sitecustomize.py` + `COVERAGE_PROCESS_START`
   setup. That refactor would let us re-include server.py honestly; in
   the meantime, omitting keeps the measured % truthful.
-- **`bearer_auth.py`** (~48%) — JWT/OAuth introspection paths would
-  need mock identity-provider responses; not worth the maintenance
-  cost yet.
 - **`llm_ensemble.py`** (~32%) — retry/failover branches need contrived
-  failure scenarios; cost > value until we see real ensemble bugs.
-- **`api.py` `stripe_webhook` + `ai_gateway_page` + `bookmarklet_page`
-  + `static_font_jetbrains_mono`** — webhook needs signature mocking
-  (separate Stripe-integration PR); the other three are mostly
-  HTML/binary rendering where E2E is more valuable than unit tests.
+  failure scenarios; cost > value until we see real ensemble bugs. The
+  `run_ensemble_with_judge` entry point IS exercised end-to-end via the
+  `/api/ensemble` route test (with a fake implementation).
+- **`api.py` `ai_gateway_page` + `bookmarklet_page` + `static_font_jetbrains_mono`**
+  — mostly HTML/binary rendering where E2E is more valuable than unit
+  tests.
+- **`bearer_auth.py` live Cognito JWKS HTTP roundtrip** (`PyJWKClient.get_signing_key_from_jwt`)
+  + **`dynamodb.py` `_item_org_visible` per-request paths** + **boto3 retry/throttling
+  paths** — all need real-AWS integration; deferred to a separate
+  initiative.
 
 If you're adding code in one of these areas, adding tests at the same
 time is *encouraged* but not required by the gate.

@@ -274,12 +274,17 @@ class DynamoDBDatabase:
         expr = "SET " + ", ".join(updates)
 
         def _update():
-            self._tags.update_item(
-                Key={"slug": slug},
-                UpdateExpression=expr,
-                ExpressionAttributeNames=names or None,
-                ExpressionAttributeValues=values,
-            )
+            kwargs: dict[str, Any] = {
+                "Key": {"slug": slug},
+                "UpdateExpression": expr,
+                "ExpressionAttributeValues": values,
+            }
+            if names:
+                # boto3 errors on ExpressionAttributeNames=None when other
+                # transformations want to merge generated placeholders in,
+                # so only include the kwarg when we actually have names.
+                kwargs["ExpressionAttributeNames"] = names
+            self._tags.update_item(**kwargs)
 
         await _run(_update)
         return await self.get_tag_by_slug(slug)
