@@ -3,6 +3,7 @@ locals {
   index_user_ids  = var.index_user_ids != "" ? var.index_user_ids : var.owner_user_id
   index_s3_bucket = var.enable_index_snapshots ? aws_s3_bucket.index[0].bucket : ""
   index_s3_key    = "knowledge-index/index.bin"
+  ecr_registry    = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # ── Default VPC + a subnet (no VPC/NAT to pay for; public-subnet placement) ───
@@ -72,11 +73,13 @@ resource "aws_instance" "this" {
 
   user_data = templatefile("${path.module}/../../scripts/ec2-knowledge-userdata.sh.tftpl", {
     image                = var.container_image
+    ecr_registry         = var.ecr_repo_name == "" ? "" : local.ecr_registry
     app_port             = var.app_port
     region               = var.aws_region
     links_table          = var.links_table
     tags_table           = var.tags_table
     type_index           = var.type_index
+    user_index           = var.user_index
     connections_table    = var.connections_table
     cognito_user_pool_id = var.cognito_user_pool_id
     cognito_client_id    = var.cognito_client_id

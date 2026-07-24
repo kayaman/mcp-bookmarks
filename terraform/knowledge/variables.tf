@@ -40,6 +40,12 @@ variable "container_image" {
   default     = "ghcr.io/kayaman/mcp-bookmarks-knowledge:latest"
 }
 
+variable "ecr_repo_name" {
+  description = "ECR repo the instance pulls the image from (grants scoped ecr:Pull). Blank = image is not ECR-hosted (e.g. GHCR)."
+  type        = string
+  default     = ""
+}
+
 # ── Blogmarks data plane (shared tables in account 257394450889) ──────────────
 
 variable "links_table" {
@@ -55,9 +61,15 @@ variable "tags_table" {
 }
 
 variable "type_index" {
-  description = "GSI (userId, bookmarkType) used for per-user Knowledge queries."
+  description = "Optional GSI (userId, bookmarkType). blogmarks-links doesn't have one, so default blank → use the userId GSI + a server-side type filter."
   type        = string
-  default     = "userId-type-savedAt-index"
+  default     = ""
+}
+
+variable "user_index" {
+  description = "GSI keyed on userId (present on blogmarks-links as userId-savedAt-index); queried by userId with a bookmarkType filter when type_index is blank."
+  type        = string
+  default     = "userId-savedAt-index"
 }
 
 variable "connections_table" {

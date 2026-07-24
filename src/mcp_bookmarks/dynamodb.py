@@ -28,10 +28,14 @@ if TYPE_CHECKING:
 _LINKS_TABLE = os.environ.get("DYNAMODB_LINKS_TABLE", "mcp-bookmarks-links")
 _TAGS_TABLE = os.environ.get("DYNAMODB_TAGS_TABLE", "mcp-bookmarks-tags")
 _ORG_LEGACY = os.environ.get("DYNAMODB_ORG_INCLUDE_LEGACY", "").lower() in ("1", "true", "yes")
-# GSI keyed (userId, bookmarkType) for O(1) per-user type queries. On blogmarks
-# this is ``userId-type-savedAt-index`` (PK userId, SK bookmarkType). Unset →
-# fall back to a filtered scan so the default mcp-bookmarks table still works.
+# Optional GSI keyed (userId, bookmarkType) for O(1) per-user type queries. Most
+# tables don't have it (blogmarks-links only has userId-savedAt-index), so it's
+# opt-in via env and unset by default.
 _TYPE_INDEX = os.environ.get("DYNAMODB_TYPE_INDEX", "").strip()
+# GSI keyed on userId (SK savedAt) — present on blogmarks-links. When the type
+# index is absent, query this by userId and filter bookmarkType server-side
+# (scans only the owner's rows, not the whole table). Unset → full-table scan.
+_USER_INDEX = os.environ.get("DYNAMODB_USER_INDEX", "userId-savedAt-index").strip()
 
 
 def _dynamo():
@@ -741,9 +745,9 @@ class DynamoDBDatabase:
         corpus of a type so the ANN index can be built once; per-request scope
         filtering happens at query time against the results.
 
-        Uses the ``_TYPE_INDEX`` GSI (``userId-type-savedAt-index`` on blogmarks)
-        when configured; otherwise falls back to a filtered scan so the default
-        ``mcp-bookmarks-links`` table (no type GSI) still works.
+        Index preference: the ``_TYPE_INDEX`` (userId, bookmarkType) GSI if
+        configured; else the ``_USER_INDEX`` (userId) GSI queried by userId with
+        a server-side bookmarkType filter; else a full-table filtered scan.
         """
         from boto3.dynamodb.conditions import Key
 
@@ -757,15 +761,24 @@ class DynamoDBDatabase:
                     kwargs["KeyConditionExpression"] = Key("userId").eq(user_id) & Key(
                         "bookmarkType"
                     ).eq(bookmark_type)
+                    use_query = True
+                elif _USER_INDEX:
+                    kwargs["IndexName"] = _USER_INDEX
+                    kwargs["KeyConditionExpression"] = Key("userId").eq(user_id)
+                    kwargs["FilterExpression"] = Attr("bookmarkType").eq(bookmark_type) & Attr(
+                        "url"
+                    ).exists()
+                    use_query = True
                 else:
                     kwargs["FilterExpression"] = (
                         Attr("userId").eq(user_id)
                         & Attr("bookmarkType").eq(bookmark_type)
                         & Attr("url").exists()
                     )
+                    use_query = False
                 if start_key is not None:
                     kwargs["ExclusiveStartKey"] = start_key
-                fn = self._links.query if _TYPE_INDEX else self._links.scan
+                fn = self._links.query if use_query else self._links.scan
                 resp = fn(**kwargs)
                 items.extend(resp.get("Items", []))
                 start_key = resp.get("LastEvaluatedKey")

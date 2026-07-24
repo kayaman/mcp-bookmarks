@@ -83,27 +83,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             "db_path": str(db_path) if not dynamo_mode else None,
         },
     )
-    # Semantic search over Knowledge bookmarks: build/refresh an in-process ANN
-    # index in the background (DynamoDB/EC2 deployment only). Never blocks
-    # startup and never fails it — the tools report "not ready" until built.
-    knowledge_task = None
-    if dynamo_mode and _semantic_enabled():
-        import asyncio
-
-        from .knowledge_index import index_user_ids, init_knowledge_index
-
-        ki = init_knowledge_index()
-        knowledge_task = asyncio.create_task(_knowledge_index_loop(db, ki, index_user_ids()))
-        log.info("knowledge_index_task_started", extra={"user_ids": index_user_ids()})
-
     try:
         yield AppContext(db=db, tenant_id=tenant_id)
     finally:
         log.info("backend_shutdown", extra={"backend": "dynamodb" if dynamo_mode else "sqlite"})
-        if knowledge_task is not None:
-            knowledge_task.cancel()
-            with contextlib.suppress(Exception):
-                await knowledge_task
         await db.close()
 
 
@@ -1351,8 +1334,38 @@ def create_combined_app():
         from .logging_config import configure_logging
 
         configure_logging()
-        async with mcp.session_manager.run():
-            yield
+
+        # Knowledge semantic index: start the background build/refresh loop ONCE
+        # for the process lifetime. This lives here (not in FastMCP's
+        # app_lifespan, which the session manager enters lazily per-session) so
+        # it starts at uvicorn boot regardless of request traffic. It uses its
+        # own DynamoDB handle — the builder only needs query_raw_by_type.
+        knowledge_task = None
+        if _dynamo_mode() and _semantic_enabled():
+            import asyncio
+            import logging
+
+            from .dynamodb import DynamoDBDatabase
+            from .knowledge_index import index_user_ids, init_knowledge_index
+
+            ki = init_knowledge_index()
+            kdb = DynamoDBDatabase()
+            await kdb.connect()
+            knowledge_task = asyncio.create_task(
+                _knowledge_index_loop(kdb, ki, index_user_ids())
+            )
+            logging.getLogger("mcp_bookmarks.knowledge_index").info(
+                "knowledge_index_task_started", extra={"user_ids": index_user_ids()}
+            )
+
+        try:
+            async with mcp.session_manager.run():
+                yield
+        finally:
+            if knowledge_task is not None:
+                knowledge_task.cancel()
+                with contextlib.suppress(Exception):
+                    await knowledge_task
 
     # Both MCP transport apps register their routes internally:
     #   /mcp       — Streamable HTTP (ChatGPT custom connectors)

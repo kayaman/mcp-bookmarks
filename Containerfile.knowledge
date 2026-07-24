@@ -5,22 +5,32 @@
 # mode against the blogmarks tables (see scripts/ec2-knowledge-userdata.sh.tftpl).
 #
 # Build:  podman build -f Containerfile.knowledge -t mcp-bookmarks-knowledge .
-FROM python:3.12-slim AS base
+FROM python:3.12-slim AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ gcc python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 WORKDIR /app
-
-FROM base AS app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-# hnswlib ships manylinux wheels for 3.12 (no compiler needed). ".[semantic]"
-# pulls hnswlib + numpy on top of the base runtime deps.
-RUN pip install --no-cache-dir ".[semantic]"
+# hnswlib has no wheel for this platform and compiles from C++, so build the
+# artifacts here (with g++) into an isolated prefix and copy them into a clean
+# runtime image below.
+RUN pip install --no-cache-dir --prefix=/install ".[semantic]"
+
+FROM python:3.12-slim AS app
+
+COPY --from=builder /install /usr/local
 
 ENV MCP_PORT=8000 \
     MCP_HOST=0.0.0.0 \
-    KNOWLEDGE_INDEX_PATH=/data/knowledge/index.bin
+    KNOWLEDGE_INDEX_PATH=/data/knowledge/index.bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
 
 EXPOSE 8000
 

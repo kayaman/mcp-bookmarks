@@ -15,10 +15,12 @@ if [ ! -f /swapfile ]; then
 fi
 
 # ── Container runtime ────────────────────────────────────────────────────────
-dnf install -y podman
-systemctl enable --now podman-restart.service
+# Docker Engine (podman was dropped from the AL2023 default repos).
+dnf install -y docker
+systemctl enable --now docker
 
-install -d -m 0755 /var/lib/mcp-bookmarks/knowledge
+# World-writable so the container's non-root appuser can persist the ANN index.
+install -d -m 0777 /var/lib/mcp-bookmarks/knowledge
 
 # ── Runtime env (values injected by Terraform) ───────────────────────────────
 cat > /etc/mcp-knowledge.env <<'ENVEOF'
@@ -26,6 +28,7 @@ DYNAMODB_MODE=true
 DYNAMODB_LINKS_TABLE=${links_table}
 DYNAMODB_TAGS_TABLE=${tags_table}
 DYNAMODB_TYPE_INDEX=${type_index}
+DYNAMODB_USER_INDEX=${user_index}
 MCP_CONNECTIONS_TABLE=${connections_table}
 AWS_DEFAULT_REGION=${region}
 MCP_BEARER_AUTH=true
@@ -47,12 +50,17 @@ ENVEOF
 chmod 600 /etc/mcp-knowledge.env
 
 # ── Pull + run ───────────────────────────────────────────────────────────────
-podman pull ${image}
-podman rm -f mcp-knowledge 2>/dev/null || true
-podman run -d --name mcp-knowledge --restart=always \
+# ECR auth when the image is ECR-hosted (instance role carries ecr:Pull).
+if [ -n "${ecr_registry}" ]; then
+  command -v aws >/dev/null 2>&1 || dnf install -y awscli
+  aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${ecr_registry}
+fi
+docker pull ${image}
+docker rm -f mcp-knowledge 2>/dev/null || true
+docker run -d --name mcp-knowledge --restart=always \
   -p ${app_port}:${app_port} \
   --env-file /etc/mcp-knowledge.env \
-  -v /var/lib/mcp-bookmarks/knowledge:/data/knowledge:Z \
+  -v /var/lib/mcp-bookmarks/knowledge:/data/knowledge \
   ${image}
 
 echo "mcp-knowledge bootstrap complete"

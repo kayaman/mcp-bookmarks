@@ -64,6 +64,29 @@ data "aws_iam_policy_document" "app" {
     resources = [local.bedrock_model_arn]
   }
 
+  # Pull the container image from ECR (when ECR-hosted).
+  dynamic "statement" {
+    for_each = var.ecr_repo_name == "" ? [] : [1]
+    content {
+      sid       = "EcrAuth"
+      actions   = ["ecr:GetAuthorizationToken"]
+      resources = ["*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.ecr_repo_name == "" ? [] : [1]
+    content {
+      sid = "EcrPull"
+      actions = [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+      ]
+      resources = ["arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repo_name}"]
+    }
+  }
+
   # Persist / warm-start the ANN index snapshot.
   dynamic "statement" {
     for_each = var.enable_index_snapshots ? [1] : []

@@ -53,6 +53,7 @@ def ddb_setup(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
                 {"AttributeName": "id", "AttributeType": "S"},
                 {"AttributeName": "userId", "AttributeType": "S"},
                 {"AttributeName": "bookmarkType", "AttributeType": "S"},
+                {"AttributeName": "savedAt", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
                 {
@@ -62,7 +63,15 @@ def ddb_setup(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
                         {"AttributeName": "bookmarkType", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                }
+                },
+                {
+                    "IndexName": "userId-savedAt-index",
+                    "KeySchema": [
+                        {"AttributeName": "userId", "KeyType": "HASH"},
+                        {"AttributeName": "savedAt", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
             ],
             BillingMode="PAY_PER_REQUEST",
         )
@@ -131,10 +140,22 @@ async def test_query_raw_by_type_uses_gsi(ddb):
     assert ids == {"k1", "k2", "k3"}  # owner's knowledge only, all of it
 
 
+async def test_query_raw_by_type_uses_user_index(ddb, monkeypatch):
+    from mcp_bookmarks import dynamodb as dynamo_mod
+
+    # No type index → query the userId GSI and filter bookmarkType server-side.
+    monkeypatch.setattr(dynamo_mod, "_TYPE_INDEX", "")
+    monkeypatch.setattr(dynamo_mod, "_USER_INDEX", "userId-savedAt-index")
+    items = await ddb.query_raw_by_type("knowledge", user_id=_OWNER)
+    assert {i["id"] for i in items} == {"k1", "k2", "k3"}
+
+
 async def test_query_raw_by_type_scan_fallback(ddb, monkeypatch):
     from mcp_bookmarks import dynamodb as dynamo_mod
 
-    monkeypatch.setattr(dynamo_mod, "_TYPE_INDEX", "")  # force scan path
+    # Clear both indexes → force the full-table scan path.
+    monkeypatch.setattr(dynamo_mod, "_TYPE_INDEX", "")
+    monkeypatch.setattr(dynamo_mod, "_USER_INDEX", "")
     items = await ddb.query_raw_by_type("knowledge", user_id=_OWNER)
     assert {i["id"] for i in items} == {"k1", "k2", "k3"}
 
