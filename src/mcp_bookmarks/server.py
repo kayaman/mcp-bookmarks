@@ -1370,6 +1370,7 @@ def create_combined_app():
     from .api import AI_GATEWAY_SCRIPT_HASH
     from .bearer_auth import BearerAuthMiddleware
     from .correlation import CorrelationMiddleware
+    from .origin_secret import OriginSecretMiddleware
     from .security_headers import SecurityHeadersMiddleware
 
     # Order matters:
@@ -1385,6 +1386,10 @@ def create_combined_app():
     #     even when bearer auth would reject the inner request.
     #   - Auth runs last, gating /mcp, /sse, /messages.
     middleware = [
+        # Outermost: reject any request that didn't come through CloudFront
+        # (no-op unless ORIGIN_SHARED_SECRET is set). Runs before GZip so
+        # rejected traffic does the least possible work.
+        Middleware(OriginSecretMiddleware),
         Middleware(GZipMiddleware, minimum_size=500),
         Middleware(CorrelationMiddleware),
         Middleware(

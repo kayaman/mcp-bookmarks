@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# EC2 user-data for the blogmarks Knowledge MCP server (rendered by Terraform
+# via templatefile()). Runs the semantic image in DynamoDB mode against the
+# shared blogmarks tables, behind CloudFront. Logs to /var/log/mcp-bootstrap.log.
+set -euxo pipefail
+exec > >(tee -a /var/log/mcp-bootstrap.log) 2>&1
+
+# ── Swap (small instances embed the ANN index in RAM) ────────────────────────
+if [ ! -f /swapfile ]; then
+  dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# ── Container runtime ────────────────────────────────────────────────────────
+dnf install -y podman
+systemctl enable --now podman-restart.service
+
+install -d -m 0755 /var/lib/mcp-bookmarks/knowledge
+
+# ── Runtime env (values injected by Terraform) ───────────────────────────────
+cat > /etc/mcp-knowledge.env <<'ENVEOF'
+DYNAMODB_MODE=true
+DYNAMODB_LINKS_TABLE=${links_table}
+DYNAMODB_TAGS_TABLE=${tags_table}
+DYNAMODB_TYPE_INDEX=${type_index}
+MCP_CONNECTIONS_TABLE=${connections_table}
+AWS_DEFAULT_REGION=${region}
+MCP_BEARER_AUTH=true
+COGNITO_USER_POOL_ID=${cognito_user_pool_id}
+COGNITO_CLIENT_ID=${cognito_client_id}
+COGNITO_REGION=${region}
+OWNER_USER_ID=${owner_user_id}
+KNOWLEDGE_INDEX_USER_IDS=${index_user_ids}
+BEDROCK_EMBED_MODEL=${bedrock_embed_model}
+BEDROCK_EMBED_DIMS=${bedrock_embed_dims}
+KNOWLEDGE_INDEX_PATH=/data/knowledge/index.bin
+KNOWLEDGE_INDEX_REFRESH_SECONDS=${refresh_seconds}
+KNOWLEDGE_INDEX_S3_BUCKET=${index_s3_bucket}
+KNOWLEDGE_INDEX_S3_KEY=${index_s3_key}
+ORIGIN_SHARED_SECRET=${origin_shared_secret}
+MCP_PORT=${app_port}
+MCP_HOST=0.0.0.0
+ENVEOF
+chmod 600 /etc/mcp-knowledge.env
+
+# ── Pull + run ───────────────────────────────────────────────────────────────
+podman pull ${image}
+podman rm -f mcp-knowledge 2>/dev/null || true
+podman run -d --name mcp-knowledge --restart=always \
+  -p ${app_port}:${app_port} \
+  --env-file /etc/mcp-knowledge.env \
+  -v /var/lib/mcp-bookmarks/knowledge:/data/knowledge:Z \
+  ${image}
+
+echo "mcp-knowledge bootstrap complete"
