@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 _LINKS_TABLE = os.environ.get("DYNAMODB_LINKS_TABLE", "mcp-bookmarks-links")
 _TAGS_TABLE = os.environ.get("DYNAMODB_TAGS_TABLE", "mcp-bookmarks-tags")
 _ORG_LEGACY = os.environ.get("DYNAMODB_ORG_INCLUDE_LEGACY", "").lower() in ("1", "true", "yes")
+# GSI keyed (userId, bookmarkType) for O(1) per-user type queries. On blogmarks
+# this is ``userId-type-savedAt-index`` (PK userId, SK bookmarkType). Unset →
+# fall back to a filtered scan so the default mcp-bookmarks table still works.
+_TYPE_INDEX = os.environ.get("DYNAMODB_TYPE_INDEX", "").strip()
 
 
 def _dynamo():
@@ -97,6 +101,12 @@ def _to_bookmark(item: dict) -> Bookmark:
         ai_error=item.get("aiError"),
         bookmark_type=item.get("bookmarkType"),
         bookmark_type_confidence=item.get("bookmarkTypeConfidence"),
+        # YouTube deep-extraction (blogmarks async-workers): fuller transcript +
+        # structured chapters/claims/entities live inline on the links row.
+        deep_text=item.get("deepText"),
+        ai_chapters=item.get("aiChapters"),
+        ai_claims=item.get("aiClaims"),
+        entities=item.get("entities"),
         original_url=item.get("originalUrl"),
         saved_at=item.get("savedAt"),
         source=item.get("source"),
@@ -181,6 +191,50 @@ class DynamoDBDatabase:
             return Attr("organization_id").eq(org_id) | Attr("organization_id").not_exists()
         return Attr("organization_id").eq(org_id)
 
+    def _scope_condition(self):
+        """Scope filter for scoped-token (agent) reads — parity with read-mcp.
+
+        Mirrors ``buildScopeFilter`` (blogmarks/lambda/read-mcp/index.mjs:461):
+          - **exposure gate** — exclude per-bookmark ``mcpExposed == false``;
+          - **tags allowlist** — for a ``{"type": "tags", "tags": [...]}`` scope,
+            require at least one allow-listed tag in ``aiTags``.
+
+        Returns ``None`` when there is no per-connection scope (Cognito/owner or
+        stdio traffic) so first-party reads still see every bookmark — the
+        exposure gate is an *agent-access* control, never applied to the owner.
+        """
+        from .request_context import current_scope
+
+        scope = current_scope()
+        if scope is None:
+            return None
+        # Exposure gate: absent attribute counts as exposed (matches read-mcp).
+        cond = Attr("mcpExposed").not_exists() | Attr("mcpExposed").eq(True)
+        if scope.get("type") == "tags":
+            tags = [t for t in (scope.get("tags") or []) if t]
+            if tags:  # empty list ⇒ treat as all_private (exposure only)
+                tag_cond = None
+                for t in tags:
+                    c = Attr("aiTags").contains(t)
+                    tag_cond = c if tag_cond is None else (tag_cond | c)
+                cond = cond & tag_cond
+        return cond
+
+    def _item_scope_visible(self, item: dict) -> bool:
+        """Python-side equivalent of :meth:`_scope_condition` for single items."""
+        from .request_context import current_scope
+
+        scope = current_scope()
+        if scope is None:
+            return True
+        if item.get("mcpExposed") is False:
+            return False
+        if scope.get("type") == "tags":
+            tags = {t for t in (scope.get("tags") or []) if t}
+            if tags and not (tags & set(item.get("aiTags", []))):
+                return False
+        return True
+
     def _base_link_filter(self):
         fe = Attr("url").exists() & Attr("rateLimitKey").not_exists()
         tf = self._tenant_filter_expr()
@@ -189,6 +243,9 @@ class DynamoDBDatabase:
         uf = self._request_user_filter()
         if uf is not None:
             fe = fe & uf
+        sc = self._scope_condition()
+        if sc is not None:
+            fe = fe & sc
         return fe
 
     def _item_org_visible(self, item: dict) -> bool:
@@ -466,6 +523,8 @@ class DynamoDBDatabase:
             return None
         if not self._item_org_visible(item):
             return None
+        if not self._item_scope_visible(item):
+            return None
         return _to_bookmark(item)
 
     _MAX_AI_CONTENT_CHARS = 350_000
@@ -652,10 +711,18 @@ class DynamoDBDatabase:
             return resp.get("Items", []), resp.get("LastEvaluatedKey")
 
         raw_items, last_key = await _run(_scan)
+        # Scope + org enforcement runs HERE (async context) rather than in the
+        # executor-thread FilterExpression: contextvars (current_user_id /
+        # current_scope) don't propagate into run_in_executor threads, so the
+        # in-thread _base_link_filter conditions are an optimization only — this
+        # post-filter is the actual guard, mirroring _item_org_visible.
         visible = [
             i
             for i in raw_items
-            if i.get("url") and not i.get("rateLimitKey") and self._item_org_visible(i)
+            if i.get("url")
+            and not i.get("rateLimitKey")
+            and self._item_org_visible(i)
+            and self._item_scope_visible(i)
         ]
         next_cursor: str | None = None
         if last_key:
@@ -663,6 +730,50 @@ class DynamoDBDatabase:
                 json.dumps(last_key, default=str).encode("utf-8")
             ).decode("ascii")
         return visible, next_cursor
+
+    async def query_raw_by_type(
+        self, bookmark_type: str, *, user_id: str, limit: int | None = None
+    ) -> list[dict]:
+        """Return raw DDB items for one ``userId`` + ``bookmarkType``.
+
+        Used by the semantic index builder (server startup / refresh), NOT by
+        request-scoped tool reads — it deliberately returns the owner's full
+        corpus of a type so the ANN index can be built once; per-request scope
+        filtering happens at query time against the results.
+
+        Uses the ``_TYPE_INDEX`` GSI (``userId-type-savedAt-index`` on blogmarks)
+        when configured; otherwise falls back to a filtered scan so the default
+        ``mcp-bookmarks-links`` table (no type GSI) still works.
+        """
+        from boto3.dynamodb.conditions import Key
+
+        def _query() -> list[dict]:
+            items: list[dict] = []
+            start_key: dict[str, Any] | None = None
+            while True:
+                kwargs: dict[str, Any] = {}
+                if _TYPE_INDEX:
+                    kwargs["IndexName"] = _TYPE_INDEX
+                    kwargs["KeyConditionExpression"] = Key("userId").eq(user_id) & Key(
+                        "bookmarkType"
+                    ).eq(bookmark_type)
+                else:
+                    kwargs["FilterExpression"] = (
+                        Attr("userId").eq(user_id)
+                        & Attr("bookmarkType").eq(bookmark_type)
+                        & Attr("url").exists()
+                    )
+                if start_key is not None:
+                    kwargs["ExclusiveStartKey"] = start_key
+                fn = self._links.query if _TYPE_INDEX else self._links.scan
+                resp = fn(**kwargs)
+                items.extend(resp.get("Items", []))
+                start_key = resp.get("LastEvaluatedKey")
+                if start_key is None or (limit and len(items) >= limit):
+                    break
+            return items[:limit] if limit else items
+
+        return await _run(_query)
 
     async def get_stats(self) -> dict:
         def _counts():
@@ -696,7 +807,11 @@ class DynamoDBDatabase:
             return self._links.scan(FilterExpression=self._base_link_filter()).get("Items", [])
 
         items = await _run(_scan)
-        return [_to_bookmark(i) for i in items if self._item_org_visible(i)]
+        return [
+            _to_bookmark(i)
+            for i in items
+            if self._item_org_visible(i) and self._item_scope_visible(i)
+        ]
 
     async def get_full_export(self) -> dict:
         bookmarks = await self.get_all_bookmarks()

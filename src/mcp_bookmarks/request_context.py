@@ -30,6 +30,14 @@ _current_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _current_tenant_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mcp_bookmarks_tenant_id", default=None
 )
+# The scoped-token connection's ``scope`` map (e.g. ``{"type": "all_private"}``
+# or ``{"type": "tags", "tags": [...]}``), mirrored from the connections table.
+# ``None`` means "no per-connection scope" → the data layer applies the default
+# (exposure gate only, i.e. ``all_private``). This is the parity mechanism for
+# read-mcp's ``buildScopeFilter`` (blogmarks/lambda/read-mcp/index.mjs:461).
+_current_scope: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "mcp_bookmarks_scope", default=None
+)
 
 
 def current_user_id() -> str | None:
@@ -37,28 +45,51 @@ def current_user_id() -> str | None:
     return _current_user_id.get()
 
 
+def current_scope() -> dict | None:
+    """Return the connection ``scope`` map for the current request, or ``None``.
+
+    ``None`` → the data layer applies the ``all_private`` default (per-bookmark
+    ``mcpExposed`` gate only). A ``{"type": "tags", "tags": [...]}`` map further
+    restricts reads to bookmarks carrying one of the allow-listed tags.
+    """
+    return _current_scope.get()
+
+
 def current_tenant_id() -> str | None:
     """Return the tenant/organization_id resolved by the current request, or ``None``."""
     return _current_tenant_id.get()
 
 
-def set_request_identity(user_id: str | None, tenant_id: str | None) -> tuple[Any, Any]:
-    """Set the per-request identity. Returns reset tokens for both vars.
+def set_request_identity(
+    user_id: str | None,
+    tenant_id: str | None,
+    scope: dict | None = None,
+) -> tuple[Any, Any, Any]:
+    """Set the per-request identity (+ optional scope). Returns reset tokens.
 
     Callers MUST pass the returned tokens to :func:`reset_request_identity` in
     a finally block (or use the :func:`request_identity` context manager) so
     leaks across requests can't happen even if a handler raises.
+
+    ``scope`` defaults to ``None`` so existing two-arg callers keep working; the
+    returned tuple always carries three tokens.
     """
-    return _current_user_id.set(user_id), _current_tenant_id.set(tenant_id)
+    return (
+        _current_user_id.set(user_id),
+        _current_tenant_id.set(tenant_id),
+        _current_scope.set(scope),
+    )
 
 
-def reset_request_identity(tokens: tuple[Any, Any]) -> None:
-    user_token, tenant_token = tokens
+def reset_request_identity(tokens: tuple[Any, Any, Any]) -> None:
+    user_token, tenant_token, scope_token = tokens
     _current_user_id.reset(user_token)
     _current_tenant_id.reset(tenant_token)
+    _current_scope.reset(scope_token)
 
 
 __all__ = [
+    "current_scope",
     "current_tenant_id",
     "current_user_id",
     "reset_request_identity",

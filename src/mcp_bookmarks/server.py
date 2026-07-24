@@ -83,10 +83,27 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             "db_path": str(db_path) if not dynamo_mode else None,
         },
     )
+    # Semantic search over Knowledge bookmarks: build/refresh an in-process ANN
+    # index in the background (DynamoDB/EC2 deployment only). Never blocks
+    # startup and never fails it — the tools report "not ready" until built.
+    knowledge_task = None
+    if dynamo_mode and _semantic_enabled():
+        import asyncio
+
+        from .knowledge_index import index_user_ids, init_knowledge_index
+
+        ki = init_knowledge_index()
+        knowledge_task = asyncio.create_task(_knowledge_index_loop(db, ki, index_user_ids()))
+        log.info("knowledge_index_task_started", extra={"user_ids": index_user_ids()})
+
     try:
         yield AppContext(db=db, tenant_id=tenant_id)
     finally:
         log.info("backend_shutdown", extra={"backend": "dynamodb" if dynamo_mode else "sqlite"})
+        if knowledge_task is not None:
+            knowledge_task.cancel()
+            with contextlib.suppress(Exception):
+                await knowledge_task
         await db.close()
 
 
@@ -111,6 +128,62 @@ async def _open_db_for_ready() -> BookmarkBackend:
         db = Database(db_path, tenant_id=tenant_id)
     await db.connect()
     return db
+
+
+# ── Knowledge semantic-search helpers (DynamoDB/EC2 mode) ─────────────
+
+
+def _dynamo_mode() -> bool:
+    return os.environ.get("DYNAMODB_MODE", "").lower() in ("1", "true", "yes")
+
+
+def _semantic_enabled() -> bool:
+    """Semantic search runs only in DynamoDB mode with at least one owner id.
+
+    Gating on ``index_user_ids()`` keeps default single-user SQLite/stdio and
+    unconfigured DynamoDB deploys from calling Bedrock at startup.
+    """
+    from .knowledge_index import index_user_ids
+
+    return bool(index_user_ids())
+
+
+async def _knowledge_index_loop(db, ki, user_ids: list[str]) -> None:
+    """Warm-start (load snapshot, else build) then refresh on an interval."""
+    import asyncio
+    import logging
+
+    log = logging.getLogger("mcp_bookmarks.knowledge_index")
+    from .embeddings_bedrock import embed_texts
+
+    interval = int(os.environ.get("KNOWLEDGE_INDEX_REFRESH_SECONDS", "300"))
+    if not ki.load():
+        try:
+            await ki.build(db, user_ids, embed_texts)
+        except Exception:
+            log.exception("knowledge_index_initial_build_failed")
+    while True:
+        try:
+            await ki.refresh(db, user_ids, embed_texts)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("knowledge_index_refresh_failed")
+        await asyncio.sleep(interval)
+
+
+def _record_scope_visible(rec: dict, scope: dict | None) -> bool:
+    """Query-time equivalent of DynamoDBDatabase._item_scope_visible for a
+    manifest record (holds ``mcpExposed`` + ``tags``)."""
+    if scope is None:
+        return True
+    if rec.get("mcpExposed") is False:
+        return False
+    if scope.get("type") == "tags":
+        tags = {t for t in (scope.get("tags") or []) if t}
+        if tags and not (tags & set(rec.get("tags", []))):
+            return False
+    return True
 
 
 # ── Server instance ───────────────────────────────────────────────
@@ -811,12 +884,34 @@ async def export_bookmarks(
 
 @mcp.tool()
 async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
-    """Embed title+description+content for a bookmark (SQLite only). Requires OPENAI_API_KEY.
+    """Embed a bookmark for semantic search.
 
-    Stores vectors in local SQLite for semantic_search_bookmarks. Not available in DYNAMODB_MODE.
+    - **DynamoDB/EC2 mode:** Knowledge bookmarks are indexed automatically by a
+      background task. This tool forces an immediate index refresh (picks up
+      newly-saved / newly-promoted Knowledge bookmarks now instead of waiting
+      for the next cycle); ``bookmark_id`` is advisory.
+    - **SQLite mode:** embeds title+description+content for one bookmark via
+      OpenAI (requires ``OPENAI_API_KEY``).
     """
     if qb := await _mcp_quota_block():
         return qb
+    if _dynamo_mode():
+        from .knowledge_index import get_knowledge_index, index_user_ids
+
+        ki = get_knowledge_index()
+        if ki is None:
+            return json.dumps(
+                {"error": "Semantic index disabled (set OWNER_USER_ID / KNOWLEDGE_INDEX_USER_IDS)."},
+                ensure_ascii=False,
+            )
+        from .embeddings_bedrock import embed_texts
+
+        try:
+            stats = await ki.refresh(_get_db(ctx), index_user_ids(), embed_texts)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        await _mcp_record("mcp_index_bookmark_embedding", {"mode": "dynamodb"})
+        return json.dumps({"status": "refreshed", **stats}, ensure_ascii=False)
     db = _get_db(ctx)
     bookmark = await bookmark_service.get_or_none(db=db, bookmark_id=bookmark_id)
     if not bookmark:
@@ -850,9 +945,61 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
 
 @mcp.tool()
 async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = None) -> str:
-    """Vector search over indexed bookmarks (SQLite + OpenAI embeddings only)."""
+    """Semantic (vector) search over your **Knowledge** bookmarks.
+
+    Matches meaning, not just keywords, against the extracted content of
+    bookmarks you've curated as Knowledge. In DynamoDB/EC2 mode this queries an
+    in-process Bedrock-embedded index; results are filtered to your own
+    bookmarks and to your connection's scope (exposure + tag allowlist).
+    """
     if qb := await _mcp_quota_block():
         return qb
+    if _dynamo_mode():
+        from .knowledge_index import get_knowledge_index
+        from .request_context import current_scope, current_user_id
+
+        ki = get_knowledge_index()
+        if ki is None or not ki.ready:
+            return json.dumps(
+                {
+                    "results": [],
+                    "hint": "Knowledge index is still building or disabled; try again shortly.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        from .embeddings_bedrock import embed_model, embed_texts
+
+        try:
+            qvec = (await embed_texts([query]))[0]
+        except Exception as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        uid = current_user_id()
+        scope = current_scope()
+        out: list[dict] = []
+        for rec, score in ki.search(qvec, max(1, min(int(limit), 50))):
+            if uid and rec.get("userId") != uid:
+                continue
+            if not _record_scope_visible(rec, scope):
+                continue
+            out.append(
+                {
+                    "id": rec.get("id"),
+                    "url": rec.get("url"),
+                    "title": rec.get("title"),
+                    "score": round(score, 6),
+                    "tags": rec.get("tags", []),
+                    "summary": rec.get("summary", ""),
+                }
+            )
+            if len(out) >= limit:
+                break
+        await _mcp_record("mcp_semantic_search_bookmarks", {"limit": limit, "mode": "dynamodb"})
+        return json.dumps(
+            {"query": query, "model": embed_model(), "total_indexed": ki.size, "results": out},
+            ensure_ascii=False,
+            indent=2,
+        )
     db = _get_db(ctx)
     try:
         ranked, model = await embedding_service.semantic_search(db=db, query=query, limit=limit)

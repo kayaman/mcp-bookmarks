@@ -255,11 +255,20 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             tenant_id = str(
                 row.get("organizationId") or os.environ.get("DYNAMODB_ORG_ID", "default")
             )
+            # The connection's ``scope`` map ({"type": "all_private"} |
+            # {"type": "tags", "tags": [...]}) drives read filtering downstream,
+            # at parity with read-mcp's buildScopeFilter. A non-dict/absent
+            # value falls back to the all_private default in the data layer.
+            scope = row.get("scope")
+            if not isinstance(scope, dict):
+                scope = None
             request.state.user_id = user_id
             request.state.tenant_id = tenant_id
-            request.state.connection_id = str(row.get("id") or "")
+            request.state.connection_id = str(row.get("connectionId") or row.get("id") or "")
+            request.state.scope = scope
+            request.state.write_enabled = bool(row.get("writeEnabled"))
             request.state.auth_kind = "scoped_token"
-            tokens = set_request_identity(user_id, tenant_id)
+            tokens = set_request_identity(user_id, tenant_id, scope)
             try:
                 return await call_next(request)
             finally:
