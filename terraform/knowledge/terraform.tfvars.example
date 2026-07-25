@@ -1,0 +1,27 @@
+# ── Blogmarks Knowledge MCP — terraform.tfvars ──────────────────────────────
+# Copy to terraform.tfvars and fill in. Deploys into account 257394450889.
+
+# Required: whose Knowledge bookmarks get indexed (owner's Cognito sub).
+owner_user_id = "84585478-xxxx-xxxx-xxxx-xxxxxxxxd951"
+
+# Owner JWT path (first-party browser/mobile). Optional but recommended.
+cognito_user_pool_id = "us-east-1_iVTzSS4Ky"
+cognito_client_id    = "REPLACE_ME"
+
+# The semantic image (build + push from Containerfile.knowledge first).
+container_image = "ghcr.io/kayaman/mcp-bookmarks-knowledge:latest"
+
+# ── Phase B (staging): leave the domain blank → validate on *.cloudfront.net ──
+# mcp_hostname   = ""
+# route53_zone_id = ""
+
+# ── Phase C (cutover): take over mcp.blogmarks.dev ───────────────────────────
+# mcp_hostname    = "mcp.blogmarks.dev"
+# route53_zone_id = "ZXXXXXXXXXXXXX"   # the blogmarks.dev hosted zone
+
+# Defaults are correct for prod; override only if needed:
+# links_table       = "blogmarks-links"
+# tags_table        = "blogmarks-tags"
+# connections_table = "blogmarks-mcp-connections"
+# type_index        = "userId-type-savedAt-index"
+# instance_type     = "t3.small"

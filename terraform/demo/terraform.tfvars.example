@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and edit. The defaults already give a working demo.
+
+aws_region    = "us-east-1"
+instance_type = "t3.micro"
+
+# ── Optional: custom domain ───────────────────────────────────────────────────
+# Leave both blank to demo on the free https://<id>.cloudfront.net domain.
+# mcp_hostname    = "mcp-demo.example.com"
+# route53_zone_id = "Z0123456789ABCDEFGHIJ"

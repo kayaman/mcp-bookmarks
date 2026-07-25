@@ -1,6 +1,7 @@
 """Domain models for the bookmark knowledge base."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -99,6 +100,18 @@ class Bookmark(BaseModel):
     original_url: str | None = Field(default=None, alias="originalUrl")
     saved_at: str | None = Field(default=None, alias="savedAt")
     source: str | None = None
+
+    # ── YouTube deep-extraction (blogmarks async-workers) ───────────────
+    deep_text: str | None = Field(
+        default=None, alias="deepText", description="Fuller transcript text (deep extract)"
+    )
+    ai_chapters: list[Any] | None = Field(
+        default=None, alias="aiChapters", description="Timestamped chapters"
+    )
+    ai_claims: Any | None = Field(
+        default=None, alias="aiClaims", description="Claims / recommendations / resources"
+    )
+    entities: Any | None = Field(default=None, description="Extracted typed entities")
 
     # ── ownership / share metadata ──────────────────────────────────────
     notes: str | None = None

@@ -18,12 +18,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Cloud semantic search over Knowledge bookmarks (EC2/DynamoDB deployment).
+# Imported lazily in knowledge_index.py + embeddings_bedrock.py, so the base
+# install (SQLite/stdio) does not pull these in.
+semantic = [
+    "hnswlib>=0.8.0",
+    "numpy>=1.26.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "asgi-lifespan>=2.1.0",
     "moto[dynamodb]>=5.0.0",
+    "hnswlib>=0.8.0",
+    "numpy>=1.26.0",
 ]
 
 [tool.pytest.ini_options]
