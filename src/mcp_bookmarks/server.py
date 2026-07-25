@@ -884,7 +884,9 @@ async def index_bookmark_embedding(bookmark_id: int | str, ctx: Context) -> str:
         ki = get_knowledge_index()
         if ki is None:
             return json.dumps(
-                {"error": "Semantic index disabled (set OWNER_USER_ID / KNOWLEDGE_INDEX_USER_IDS)."},
+                {
+                    "error": "Semantic index disabled (set OWNER_USER_ID / KNOWLEDGE_INDEX_USER_IDS)."
+                },
                 ensure_ascii=False,
             )
         from .embeddings_bedrock import embed_texts
@@ -999,7 +1001,9 @@ async def semantic_search_bookmarks(query: str, limit: int = 8, ctx: Context = N
             ensure_ascii=False,
             indent=2,
         )
-    out: list[dict] = []
+    # Annotated on the DynamoDB branch above; re-annotating the same name in the
+    # SQLite branch is a mypy no-redef even though the branches never both run.
+    out = []
     for bid, score in ranked:
         bk = await bookmark_service.get_or_none(db=db, bookmark_id=bid)
         if not bk:
@@ -1351,9 +1355,7 @@ def create_combined_app():
             ki = init_knowledge_index()
             kdb = DynamoDBDatabase()
             await kdb.connect()
-            knowledge_task = asyncio.create_task(
-                _knowledge_index_loop(kdb, ki, index_user_ids())
-            )
+            knowledge_task = asyncio.create_task(_knowledge_index_loop(kdb, ki, index_user_ids()))
             logging.getLogger("mcp_bookmarks.knowledge_index").info(
                 "knowledge_index_task_started", extra={"user_ids": index_user_ids()}
             )

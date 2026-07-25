@@ -82,7 +82,9 @@ async def test_build_indexes_only_knowledge_with_text(tmp_path) -> None:
 
 
 async def test_search_returns_scored_records(tmp_path) -> None:
-    db = FakeDB([_item("a", title="alpha", content="aaaa"), _item("b", title="eee", content="eeee")])
+    db = FakeDB(
+        [_item("a", title="alpha", content="aaaa"), _item("b", title="eee", content="eeee")]
+    )
     ki = _index(tmp_path)
     await ki.build(db, ["owner"], fake_embed)
     qvec = (await fake_embed(["aaaa"]))[0]

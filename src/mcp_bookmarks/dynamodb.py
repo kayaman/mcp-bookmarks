@@ -765,9 +765,9 @@ class DynamoDBDatabase:
                 elif _USER_INDEX:
                     kwargs["IndexName"] = _USER_INDEX
                     kwargs["KeyConditionExpression"] = Key("userId").eq(user_id)
-                    kwargs["FilterExpression"] = Attr("bookmarkType").eq(bookmark_type) & Attr(
-                        "url"
-                    ).exists()
+                    kwargs["FilterExpression"] = (
+                        Attr("bookmarkType").eq(bookmark_type) & Attr("url").exists()
+                    )
                     use_query = True
                 else:
                     kwargs["FilterExpression"] = (

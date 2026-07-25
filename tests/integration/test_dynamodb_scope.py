@@ -92,28 +92,53 @@ def _seed_items() -> list[dict]:
     return [
         # owner Knowledge, exposed, tagged rust
         {
-            "id": "k1", "userId": _OWNER, "url": "https://ex.com/k1", "bookmarkType": "knowledge",
-            "savedAt": "2026-01-01", "aiTags": ["rust", "systems"], "aiContent": "x",
+            "id": "k1",
+            "userId": _OWNER,
+            "url": "https://ex.com/k1",
+            "bookmarkType": "knowledge",
+            "savedAt": "2026-01-01",
+            "aiTags": ["rust", "systems"],
+            "aiContent": "x",
         },
         # owner Knowledge, NOT exposed to agents
         {
-            "id": "k2", "userId": _OWNER, "url": "https://ex.com/k2", "bookmarkType": "knowledge",
-            "savedAt": "2026-01-02", "aiTags": ["python"], "mcpExposed": False, "aiContent": "x",
+            "id": "k2",
+            "userId": _OWNER,
+            "url": "https://ex.com/k2",
+            "bookmarkType": "knowledge",
+            "savedAt": "2026-01-02",
+            "aiTags": ["python"],
+            "mcpExposed": False,
+            "aiContent": "x",
         },
         # owner Knowledge, exposed, tagged python
         {
-            "id": "k3", "userId": _OWNER, "url": "https://ex.com/k3", "bookmarkType": "knowledge",
-            "savedAt": "2026-01-03", "aiTags": ["python"], "aiContent": "x",
+            "id": "k3",
+            "userId": _OWNER,
+            "url": "https://ex.com/k3",
+            "bookmarkType": "knowledge",
+            "savedAt": "2026-01-03",
+            "aiTags": ["python"],
+            "aiContent": "x",
         },
         # owner read_later (not knowledge)
         {
-            "id": "r1", "userId": _OWNER, "url": "https://ex.com/r1", "bookmarkType": "read_later",
-            "savedAt": "2026-01-04", "aiTags": ["misc"], "aiContent": "x",
+            "id": "r1",
+            "userId": _OWNER,
+            "url": "https://ex.com/r1",
+            "bookmarkType": "read_later",
+            "savedAt": "2026-01-04",
+            "aiTags": ["misc"],
+            "aiContent": "x",
         },
         # a different user's knowledge (must never leak)
         {
-            "id": "o1", "userId": "someone-else", "url": "https://ex.com/o1",
-            "bookmarkType": "knowledge", "savedAt": "2026-01-05", "aiTags": ["rust"],
+            "id": "o1",
+            "userId": "someone-else",
+            "url": "https://ex.com/o1",
+            "bookmarkType": "knowledge",
+            "savedAt": "2026-01-05",
+            "aiTags": ["rust"],
         },
     ]
 

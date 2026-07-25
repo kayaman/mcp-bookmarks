@@ -128,7 +128,12 @@ class KnowledgeIndex:
         return self._ready
 
     # ── build / refresh ────────────────────────────────────────────
-    async def build(self, db: Any, user_ids: list[str], embed: Callable[[list[str]], Awaitable[list[list[float]]]]) -> int:
+    async def build(
+        self,
+        db: Any,
+        user_ids: list[str],
+        embed: Callable[[list[str]], Awaitable[list[list[float]]]],
+    ) -> int:
         """Full rebuild from scratch over ``user_ids``' Knowledge bookmarks."""
         async with self._lock:
             import numpy as np
@@ -167,7 +172,12 @@ class KnowledgeIndex:
             self._save_unlocked()
             return self.size
 
-    async def refresh(self, db: Any, user_ids: list[str], embed: Callable[[list[str]], Awaitable[list[list[float]]]]) -> dict:
+    async def refresh(
+        self,
+        db: Any,
+        user_ids: list[str],
+        embed: Callable[[list[str]], Awaitable[list[list[float]]]],
+    ) -> dict:
         """Incremental update: (re)embed new/changed, drop removed. Returns stats."""
         if self._index is None:
             built = await self.build(db, user_ids, embed)
@@ -191,7 +201,10 @@ class KnowledgeIndex:
                     continue
                 rec = _record_from_item(it, text)
                 existing_label = self._label_by_id.get(bid)
-                if existing_label is not None and self._by_label[existing_label]["hash"] == rec["hash"]:
+                if (
+                    existing_label is not None
+                    and self._by_label[existing_label]["hash"] == rec["hash"]
+                ):
                     continue  # unchanged
                 to_embed_texts.append(text)
                 to_embed_records.append(rec)
@@ -228,7 +241,9 @@ class KnowledgeIndex:
             return stats
 
     # ── query ──────────────────────────────────────────────────────
-    def search(self, query_vec: list[float], k: int, over_fetch: int = 5) -> list[tuple[dict, float]]:
+    def search(
+        self, query_vec: list[float], k: int, over_fetch: int = 5
+    ) -> list[tuple[dict, float]]:
         """Return ``[(record, score), ...]`` ranked by cosine similarity.
 
         Over-fetches so the caller can drop records failing the user/scope
@@ -240,9 +255,7 @@ class KnowledgeIndex:
         import numpy as np
 
         fetch = min(max(k * over_fetch, k), self.size)
-        labels, distances = self._index.knn_query(
-            np.asarray([query_vec], dtype="float32"), k=fetch
-        )
+        labels, distances = self._index.knn_query(np.asarray([query_vec], dtype="float32"), k=fetch)
         out: list[tuple[dict, float]] = []
         for label, dist in zip(labels[0], distances[0], strict=True):
             rec = self._by_label.get(int(label))
@@ -305,6 +318,11 @@ class KnowledgeIndex:
         s3.upload_file(str(self.manifest_path), self.s3_bucket, self.s3_key + ".manifest.json")
 
     def _hydrate_from_s3(self) -> None:
+        # Mirrors the guard in _snapshot_to_s3. The sole caller already checks both
+        # fields, but narrowing str|None → str doesn't cross the method boundary, and
+        # a guard here keeps the method safe if it ever gains another caller.
+        if not (self.s3_bucket and self.s3_key):
+            return
         s3 = self._s3()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         s3.download_file(self.s3_bucket, self.s3_key, str(self.path))
@@ -326,9 +344,10 @@ def index_user_ids() -> list[str]:
     raw = os.environ.get("KNOWLEDGE_INDEX_USER_IDS", "").strip()
     if raw:
         return [u.strip() for u in raw.split(",") if u.strip()]
-    owner = os.environ.get("OWNER_USER_ID", "").strip() or os.environ.get(
-        "DYNAMODB_USER_ID", ""
-    ).strip()
+    owner = (
+        os.environ.get("OWNER_USER_ID", "").strip()
+        or os.environ.get("DYNAMODB_USER_ID", "").strip()
+    )
     return [owner] if owner else []
 
 
