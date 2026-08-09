@@ -42,6 +42,59 @@ _PUBLIC_PATHS = frozenset({"/", "/health", "/bookmarklet", "/ai-gateway", "/webh
 # Path prefixes that need bearer auth when this middleware is active.
 _PROTECTED_PREFIXES = ("/mcp", "/sse", "/messages")
 
+# /api subpaths (relative to the /api mount) that authenticate with a bm_v1
+# scoped token instead of the static MCP_API_KEYS (admin tag editing, Phase 1).
+_BM_V1_GET_ROUTES = frozenset({"/bookmarks/recent", "/tag-edits"})
+
+
+def bearer_auth_enabled() -> bool:
+    return os.environ.get("MCP_BEARER_AUTH", "").strip().lower() in ("1", "true", "yes")
+
+
+def bm_v1_api_route(method: str, api_path: str) -> bool:
+    """True when this /api subpath authenticates via a bm_v1 bearer token.
+
+    ``api_path`` is relative to the /api mount (no ``/api`` prefix) — the
+    shape TenantAuthMiddleware sees inside the mounted app;
+    BearerAuthMiddleware strips the prefix before calling. The additive
+    ``POST /bookmarks/{id}/tags`` keeps static-key auth; only the
+    replace-set ``PUT`` on the same path is carved out.
+    """
+    if method == "GET":
+        return api_path in _BM_V1_GET_ROUTES
+    return method == "PUT" and api_path.startswith("/bookmarks/") and api_path.endswith("/tags")
+
+
+def tag_write_policy_error(request: Any) -> JSONResponse | None:
+    """Write-policy gate for the admin tag-editing endpoints.
+
+    Returns ``None`` when the request may mutate tags, else a standardized
+    error response. Rules (admin-tag-editing design, "Engine auth"):
+      - only ``auth_kind == "scoped_token"`` identities may write;
+      - the connection row's ``writeEnabled`` flag must be true;
+      - tags-scoped tokens (``scope.type == "tags"``) are rejected — only
+        all_private-scoped, write-enabled tokens may mutate tags.
+    Reads state via getattr-with-defaults: the Cognito path never sets
+    ``write_enabled``/``scope``. No-op when bearer auth is disabled
+    entirely (stdio / local SQLite installs).
+    """
+    if not bearer_auth_enabled():
+        return None
+    from .api_envelope import ErrorCode, error_response
+
+    if getattr(request.state, "auth_kind", None) != "scoped_token":
+        return error_response(
+            ErrorCode.UNAUTHORIZED, "A bm_v1 scoped token is required to edit tags", status=401
+        )
+    if not getattr(request.state, "write_enabled", False):
+        return error_response(ErrorCode.FORBIDDEN, "This token is not write-enabled", status=403)
+    scope = getattr(request.state, "scope", None)
+    if isinstance(scope, dict) and scope.get("type") == "tags":
+        return error_response(
+            ErrorCode.FORBIDDEN, "Tags-scoped tokens may not edit tags", status=403
+        )
+    return None
+
 
 # ── Cognito JWT verification ────────────────────────────────────────
 
@@ -214,7 +267,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _enabled() -> bool:
-        return os.environ.get("MCP_BEARER_AUTH", "").strip().lower() in ("1", "true", "yes")
+        return bearer_auth_enabled()
 
     async def dispatch(self, request: Request, call_next):
         if not self._enabled():
@@ -222,9 +275,16 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
         path = request.url.path
-        if path in _PUBLIC_PATHS or path.startswith("/api"):
+        if path in _PUBLIC_PATHS:
             return await call_next(request)
-        if not path.startswith(_PROTECTED_PREFIXES):
+        if path.startswith("/api"):
+            # Admin tag-editing carve-out: these subpaths authenticate HERE
+            # with a bm_v1 token (identity is required — the edit log is
+            # keyed by userId). Every other /api path keeps its existing
+            # TenantAuthMiddleware (static MCP_API_KEYS) delegation.
+            if not bm_v1_api_route(request.method, path[len("/api") :]):
+                return await call_next(request)
+        elif not path.startswith(_PROTECTED_PREFIXES):
             return await call_next(request)
 
         auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
@@ -296,5 +356,8 @@ def request_user_id(ctx: Any) -> str | None:
 
 __all__ = [
     "BearerAuthMiddleware",
+    "bearer_auth_enabled",
+    "bm_v1_api_route",
     "request_user_id",
+    "tag_write_policy_error",
 ]

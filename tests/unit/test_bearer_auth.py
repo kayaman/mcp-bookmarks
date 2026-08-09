@@ -557,5 +557,164 @@ def test_request_user_id_returns_none_when_state_lacks_user_id():
     assert request_user_id(_Ctx()) is None
 
 
+# ── Admin tag-editing carve-out (Phase 1) ──────────────────────────────
+
+
+def _app_with_tag_routes() -> Starlette:
+    """Outer-app shape: routes carry the /api prefix, BearerAuthMiddleware on top."""
+
+    async def echo(req: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "user_id": getattr(req.state, "user_id", None),
+                "auth_kind": getattr(req.state, "auth_kind", None),
+                "write_enabled": getattr(req.state, "write_enabled", None),
+            }
+        )
+
+    return Starlette(
+        routes=[
+            Route("/api/bookmarks/{bid}/tags", echo, methods=["POST", "PUT"]),
+            Route("/api/bookmarks/recent", echo, methods=["GET"]),
+            Route("/api/tag-edits", echo, methods=["GET"]),
+            Route("/api/stats", echo, methods=["GET"]),
+        ],
+        middleware=[Middleware(BearerAuthMiddleware)],
+    )
+
+
+async def test_put_bookmark_tags_requires_bearer(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    app = _app_with_tag_routes()
+    r = await _send(app, "PUT", "/api/bookmarks/abc/tags")
+    assert r.status_code == 401
+    assert r.json() == {"error": "unauthorized"}
+
+
+async def test_get_recent_and_tag_edits_require_bearer(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    app = _app_with_tag_routes()
+    assert (await _send(app, "GET", "/api/bookmarks/recent")).status_code == 401
+    assert (await _send(app, "GET", "/api/tag-edits")).status_code == 401
+
+
+async def test_post_bookmark_tags_still_delegated(monkeypatch: pytest.MonkeyPatch):
+    """The additive POST keeps static-key auth — NOT carved out."""
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    app = _app_with_tag_routes()
+    assert (await _send(app, "POST", "/api/bookmarks/abc/tags")).status_code == 200
+
+
+async def test_other_api_paths_still_delegated(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    app = _app_with_tag_routes()
+    assert (await _send(app, "GET", "/api/stats")).status_code == 200
+
+
+async def test_carved_route_accepts_scoped_token_and_sets_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from moto import mock_aws
+
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("MCP_CONNECTIONS_TABLE", "test-conns")
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+
+    token = "bm_v1_tagedit"
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with mock_aws():
+        await _create_connections_table("test-conns")
+        import boto3
+
+        boto3.resource("dynamodb", region_name="us-east-1").Table("test-conns").put_item(
+            Item={
+                "id": "conn-t",
+                "tokenHash": token_hash,
+                "userId": "u-owner",
+                "writeEnabled": True,
+                "scope": {"type": "all_private"},
+            }
+        )
+        app = _app_with_tag_routes()
+        r = await _send(
+            app, "PUT", "/api/bookmarks/abc/tags", headers={"authorization": f"Bearer {token}"}
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["user_id"] == "u-owner"
+    assert body["auth_kind"] == "scoped_token"
+    assert body["write_enabled"] is True
+
+
+async def test_composed_mount_exempts_carved_route_from_tenant_auth(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Full production topology: outer BearerAuthMiddleware + Mount("/api", api_app).
+
+    ``api_app`` (created by ``create_api_app``) registers its own routes
+    WITHOUT the ``/api`` prefix and carries ``TenantAuthMiddleware`` when
+    ``MCP_API_KEYS`` is set. Starlette's ``Mount`` strips the prefix from
+    ``scope["path"]`` (what routing matches on) but NOT from
+    ``request.url.path`` (reconstructed from ``root_path`` + ``path``), so
+    ``TenantAuthMiddleware`` still sees the full ``/api``-prefixed path here
+    — this proves the exemption must strip that prefix itself before
+    calling ``bm_v1_api_route`` (see api.py's ``TenantAuthMiddleware.dispatch``).
+    """
+    from moto import mock_aws
+    from starlette.routing import Mount
+
+    from mcp_bookmarks.api import create_api_app
+
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    monkeypatch.setenv("MCP_API_KEYS", "secret-key:tenant-a")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("MCP_CONNECTIONS_TABLE", "test-conns")
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+
+    token = "bm_v1_composed"
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    with mock_aws():
+        await _create_connections_table("test-conns")
+        import boto3
+
+        boto3.resource("dynamodb", region_name="us-east-1").Table("test-conns").put_item(
+            Item={
+                "id": "conn-composed",
+                "tokenHash": token_hash,
+                "userId": "u-composed",
+                "writeEnabled": True,
+                "scope": {"type": "all_private"},
+            }
+        )
+        api_app = create_api_app()  # mounts TenantAuthMiddleware (MCP_API_KEYS is set)
+        outer = Starlette(
+            routes=[Mount("/api", app=api_app)],
+            middleware=[Middleware(BearerAuthMiddleware)],
+        )
+
+        # Carved route: no x-api-key header. TenantAuthMiddleware must exempt
+        # it (proven by NOT getting its 401), reaching routing instead — a
+        # 405 because no PUT handler is wired yet (a later task adds it).
+        r_carved = await _send(
+            outer,
+            "PUT",
+            "/api/bookmarks/abc/tags",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert r_carved.status_code == 405
+
+        # Non-carved route: TenantAuthMiddleware still enforces the static key.
+        r_plain = await _send(outer, "GET", "/api/stats")
+    assert r_plain.status_code == 401
+    assert r_plain.json()["error"]["code"] == "unauthorized"
+
+
 # Silence "unused" warnings for the Any import on stricter linters.
 _: Any = None

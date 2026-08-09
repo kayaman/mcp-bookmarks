@@ -49,6 +49,7 @@ from .backend import (
     UnsupportedCapability,
     backend_capabilities_payload,
 )
+from .bearer_auth import bm_v1_api_route
 from .db import DEFAULT_DB_PATH, Database
 from .security_headers import compute_script_hash
 from .services import billing as billing_service
@@ -110,6 +111,21 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS":
+            return await call_next(request)
+        # Admin tag-editing carve-out: PUT /bookmarks/{id}/tags, GET
+        # /bookmarks/recent and GET /tag-edits are authenticated by
+        # BearerAuthMiddleware on the OUTER app (bm_v1 scoped token in the
+        # same Authorization: Bearer header) — the static-key check here
+        # must not 401 them. Starlette's Mount strips the /api prefix from
+        # scope["path"] (used for routing) but NOT from request.url.path
+        # (reconstructed via root_path + path), so this app still sees the
+        # full /api-prefixed path when mounted — strip it before matching.
+        # When api_app is exercised standalone (no Mount, as in the
+        # TenantAuthMiddleware unit tests) the prefix is already absent.
+        api_path = request.url.path
+        if api_path.startswith("/api"):
+            api_path = api_path[len("/api") :]
+        if bm_v1_api_route(request.method, api_path):
             return await call_next(request)
         ok, tenant = require_api_key(request.headers)
         if not ok:
