@@ -759,9 +759,7 @@ async def test_carved_routes_require_static_key_when_bearer_auth_off(
     assert r_put_ok.status_code == 400  # empty body -> invalid_json, but NOT 401
     assert r_put_ok.json()["error"]["code"] == "invalid_json"
 
-    r_recent_ok = await _send(
-        app, "GET", "/bookmarks/recent", headers={"x-api-key": "secret-key"}
-    )
+    r_recent_ok = await _send(app, "GET", "/bookmarks/recent", headers={"x-api-key": "secret-key"})
     assert r_recent_ok.status_code == 200
 
     r_edits_ok = await _send(app, "GET", "/tag-edits", headers={"x-api-key": "secret-key"})
@@ -864,6 +862,32 @@ async def test_recalibrate_routes_static_key_when_bearer_auth_off(
     )
     assert r_apply.status_code == 400  # empty body → invalid_json, but NOT 401
     assert r_apply.json()["error"]["code"] == "invalid_json"
+
+
+# ── Catalog carve-out (manual tag rename) ──────────────────────────────
+
+
+def test_bm_v1_api_route_tags_catalog():
+    from mcp_bookmarks.bearer_auth import bm_v1_api_route
+
+    assert bm_v1_api_route("GET", "/tags") is True
+    assert bm_v1_api_route("GET", "/tag-edits") is True  # unchanged
+    assert bm_v1_api_route("GET", "/tagsx") is False  # exact path only
+    assert bm_v1_api_route("GET", "/tags/recalibrate") is False  # POST-only carve
+    assert bm_v1_api_route("POST", "/tags") is False
+
+
+async def test_tags_catalog_requires_bearer_when_enabled(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+
+    async def echo(req: Request) -> JSONResponse:
+        return JSONResponse({"ok": True})
+
+    app = Starlette(
+        routes=[Route("/api/tags", echo, methods=["GET"])],
+        middleware=[Middleware(BearerAuthMiddleware)],
+    )
+    assert (await _send(app, "GET", "/api/tags")).status_code == 401
 
 
 # Silence "unused" warnings for the Any import on stricter linters.

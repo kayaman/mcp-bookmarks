@@ -44,7 +44,7 @@ _PROTECTED_PREFIXES = ("/mcp", "/sse", "/messages")
 
 # /api subpaths (relative to the /api mount) that authenticate with a bm_v1
 # scoped token instead of the static MCP_API_KEYS (admin tag editing, Phase 1).
-_BM_V1_GET_ROUTES = frozenset({"/bookmarks/recent", "/tag-edits"})
+_BM_V1_GET_ROUTES = frozenset({"/bookmarks/recent", "/tag-edits", "/tags"})
 
 # /api subpaths that authenticate with bm_v1 for POST (recalibrate, Phase 2).
 # Exact-path matches ONLY — the additive POST /bookmarks/{id}/tags must keep
