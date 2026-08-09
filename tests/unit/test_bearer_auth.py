@@ -700,15 +700,17 @@ async def test_composed_mount_exempts_carved_route_from_tenant_auth(
         )
 
         # Carved route: no x-api-key header. TenantAuthMiddleware must exempt
-        # it (proven by NOT getting its 401), reaching routing instead — a
-        # 405 because no PUT handler is wired yet (a later task adds it).
+        # it (proven by NOT getting its 401), reaching the real PUT handler
+        # instead — which clears the write-policy check (writeEnabled +
+        # all_private scope) and then 400s on the empty request body.
         r_carved = await _send(
             outer,
             "PUT",
             "/api/bookmarks/abc/tags",
             headers={"authorization": f"Bearer {token}"},
         )
-        assert r_carved.status_code == 405
+        assert r_carved.status_code == 400
+        assert r_carved.json()["error"]["code"] == "invalid_json"
 
         # Non-carved route: TenantAuthMiddleware still enforces the static key.
         r_plain = await _send(outer, "GET", "/api/stats")

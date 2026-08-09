@@ -41,6 +41,17 @@ class BookmarkTagsRequest(BaseModel):
     tag_slugs: list[str] = Field(..., min_length=1)
 
 
+class ReplaceTagsRequest(BaseModel):
+    """``PUT /api/bookmarks/{id}/tags`` body — replace-set semantics.
+
+    Count/shape limits are enforced by taxonomy.normalize_and_validate_tags
+    (400 invalid_request), not here (422), per the pinned API contract.
+    An empty list is valid and clears the bookmark's tags.
+    """
+
+    tags: list[str]
+
+
 class BookmarkSummaryRequest(BaseModel):
     """``POST /api/bookmarks/{id}/summary`` body."""
 
@@ -128,6 +139,7 @@ __all__ = [
     "BookmarkTagsRequest",
     "CreateTagRequest",
     "EnsembleRequest",
+    "ReplaceTagsRequest",
     "SaveBookmarkRequest",
     "parse_request_body",
 ]

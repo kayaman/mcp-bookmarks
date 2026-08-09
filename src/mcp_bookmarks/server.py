@@ -1414,7 +1414,7 @@ def create_combined_app():
         Middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
-            allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
+            allow_methods=["GET", "POST", "PUT", "OPTIONS", "DELETE"],
             allow_headers=[
                 "Authorization",
                 "Content-Type",

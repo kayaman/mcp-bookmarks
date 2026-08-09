@@ -14,6 +14,9 @@ Endpoints (mounted at ``/api``):
     POST /api/tag       — Create a tag (slug, name, description) — Crew / automation
     POST /api/bookmarks/{{id}}/summary — Set AI summary text
     POST /api/bookmarks/{{id}}/tags    — Assign existing tag slugs
+    PUT  /api/bookmarks/{{id}}/tags    — Replace tag set (bm_v1 token; admin tag editing)
+    GET  /api/bookmarks/recent  — Recent bookmarks incl. aiTagsOriginal/tagsReviewedAt (bm_v1)
+    GET  /api/tag-edits         — Tag-edit history, newest first (bm_v1)
     GET  /api/usage     — Monthly usage counter (when API keys configured)
     GET  /api/ai-gateway/status — Safe metadata for the AI Gateway dashboard (no secrets)
     POST /api/ensemble  — Multi-model + LLM judge (requires ENSEMBLE_ENABLED=true)
@@ -40,6 +43,7 @@ from .api_requests import (
     BookmarkTagsRequest,
     CreateTagRequest,
     EnsembleRequest,
+    ReplaceTagsRequest,
     SaveBookmarkRequest,
     parse_request_body,
 )
@@ -49,7 +53,7 @@ from .backend import (
     UnsupportedCapability,
     backend_capabilities_payload,
 )
-from .bearer_auth import bm_v1_api_route
+from .bearer_auth import bm_v1_api_route, tag_write_policy_error
 from .db import DEFAULT_DB_PATH, Database
 from .security_headers import compute_script_hash
 from .services import billing as billing_service
@@ -384,6 +388,85 @@ async def api_bookmark_tags(request: Request) -> JSONResponse:
             tenant, "rest_tag_bookmark", {"bookmark_id": str(bookmark_id), "count": len(slugs)}
         )
         return JSONResponse({"status": "ok", "bookmark_id": bookmark_id, "tag_slugs": slugs})
+    finally:
+        await db.close()
+
+
+async def api_replace_bookmark_tags(request: Request) -> JSONResponse:
+    """PUT /bookmarks/{bookmark_id}/tags — REPLACE the bookmark's tag set.
+
+    Deliberately different from the additive POST on the same path (which is
+    unchanged). bm_v1-authenticated on the outer app; write policy enforced
+    here (scoped_token + writeEnabled, tags-scoped tokens rejected).
+    """
+    policy_err = tag_write_policy_error(request)
+    if policy_err is not None:
+        return policy_err
+    bookmark_id = request.path_params["bookmark_id"]
+    body_model, err = await parse_request_body(request, ReplaceTagsRequest)
+    if err is not None:
+        return err
+    assert body_model is not None  # parse_request_body invariant
+    normalized, reason = taxonomy_service.normalize_and_validate_tags(body_model.tags)
+    if reason is not None:
+        return error_response(ErrorCode.INVALID_REQUEST, reason, status=400)
+    assert normalized is not None
+    db = await _db(request)
+    try:
+        result = await db.replace_bookmark_tags(bookmark_id, normalized, actor="human")
+        if result is None:
+            return error_response(
+                ErrorCode.NOT_FOUND, f"Bookmark {bookmark_id} not found", status=404
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "bookmark_id": str(result["bookmark_id"]),
+                "before": result["before"],
+                "after": result["after"],
+                "added": result["added"],
+                "removed": result["removed"],
+            }
+        )
+    finally:
+        await db.close()
+
+
+def _parse_limit(
+    request: Request, *, default: int, maximum: int
+) -> tuple[int | None, JSONResponse | None]:
+    raw = request.query_params.get("limit", str(default))
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None, error_response(
+            ErrorCode.INVALID_REQUEST, "limit must be an integer", status=400
+        )
+    return max(1, min(limit, maximum)), None
+
+
+async def api_recent_bookmarks(request: Request) -> JSONResponse:
+    """GET /bookmarks/recent — recent bookmarks incl. snapshot fields."""
+    limit, err = _parse_limit(request, default=50, maximum=200)
+    if err is not None:
+        return err
+    assert limit is not None  # _parse_limit invariant: err is None => limit is set
+    db = await _db(request)
+    try:
+        return JSONResponse({"bookmarks": await db.get_recent_bookmarks(limit=limit)})
+    finally:
+        await db.close()
+
+
+async def api_tag_edits(request: Request) -> JSONResponse:
+    """GET /tag-edits — tag-edit history, newest first."""
+    limit, err = _parse_limit(request, default=100, maximum=1000)
+    if err is not None:
+        return err
+    assert limit is not None  # _parse_limit invariant: err is None => limit is set
+    db = await _db(request)
+    try:
+        return JSONResponse({"edits": await db.get_tag_edits(limit=limit)})
     finally:
         await db.close()
 
@@ -1049,12 +1132,16 @@ def create_api_app() -> Starlette:
         routes=[
             Route("/save", api_save, methods=["POST"]),
             Route("/stats", api_stats, methods=["GET"]),
+            # NOTE: /bookmarks/recent MUST precede /bookmarks/{bookmark_id}.
+            Route("/bookmarks/recent", api_recent_bookmarks, methods=["GET"]),
             Route("/bookmarks/{bookmark_id}/summary", api_bookmark_summary, methods=["POST"]),
             Route("/bookmarks/{bookmark_id}/tags", api_bookmark_tags, methods=["POST"]),
+            Route("/bookmarks/{bookmark_id}/tags", api_replace_bookmark_tags, methods=["PUT"]),
             Route("/bookmarks/{bookmark_id}", api_get_bookmark, methods=["GET"]),
             Route("/bookmarks", api_bookmarks, methods=["GET"]),
             Route("/tag", api_create_tag_rest, methods=["POST"]),
             Route("/tags", api_tags, methods=["GET"]),
+            Route("/tag-edits", api_tag_edits, methods=["GET"]),
             Route("/usage", api_usage, methods=["GET"]),
             Route("/capabilities", api_capabilities, methods=["GET"]),
             Route("/ai-gateway/status", api_ai_gateway_status, methods=["GET"]),

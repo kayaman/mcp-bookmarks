@@ -163,6 +163,33 @@ Failures: `validation_error` (missing/empty slug or name),
 **Body:** `{"tag_slugs": ["a", "b"]}`. Failures: `validation_error`,
 `not_found`, `invalid_request` (unknown tag slug), `rate_limited`.
 
+### `PUT /api/bookmarks/{id}/tags` — replace the tag set (admin tag editing)
+
+Replace-set semantics — deliberately different from the additive `POST`
+above. Authenticates with a **bm_v1 scoped token** via `BearerAuthMiddleware`
+(carved out of the static-key `/api` surface); requires `writeEnabled` and an
+`all_private` scope — tags-scoped tokens are rejected (403). Tags are
+normalized (strip leading `#`, lowercase, trim, spaces→hyphens) and validated
+(`^[a-z0-9]+(-[a-z0-9]+)*$`, ≤30 chars each, ≤10 tags; 400 → nothing written).
+
+Body: `{"tags": ["a-b", ...]}` →
+`{"ok": true, "bookmark_id": "<id>", "before": [...], "after": [...], "added": [...], "removed": [...]}`
+
+Side effects: writes `aiTagsOriginal` (first mutation only) and
+`tagsReviewedAt` (first human edit only), appends a tag-edit event
+(`actor: "human"`), reconciles tag `usage_count` (±1; missing tags created at 1).
+
+### `GET /api/bookmarks/recent?limit=` — recent bookmarks with snapshot fields (bm_v1)
+
+Default limit 50, max 200. →
+`{"bookmarks": [{"id","url","title","aiTags","aiTagsOriginal","tagsReviewedAt"}]}`
+(nulls where absent).
+
+### `GET /api/tag-edits?limit=` — tag-edit history (bm_v1)
+
+Default limit 100, max 1000, newest first (single PK query in DynamoDB mode). →
+`{"edits": [{"bookmarkId","before","after","added","removed","actor","ts"}]}`
+
 ### `GET /api/tags` — list all tags
 
 Tags are scoped to the authenticated tenant.
