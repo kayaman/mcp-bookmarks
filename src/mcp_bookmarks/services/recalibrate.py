@@ -164,3 +164,87 @@ async def propose(db: BookmarkBackend) -> dict:
         extra={"ops": len(ops_out), "edits": len(edits), "tags": len(tags)},
     )
     return {"ops": ops_out, "editsConsidered": len(edits), "tagsConsidered": len(tags)}
+
+
+async def apply(db: BookmarkBackend, ops: list[dict]) -> tuple[dict | None, str | None]:
+    """Execute admin-approved ops. Returns ``(result, None)`` or ``(None, reason)``.
+
+    Validation runs to completion over ALL ops before the first write —
+    any failure returns ``(None, reason)`` (endpoint → 400 invalid_request)
+    with nothing written. Execution then coalesces per bookmark: one
+    ``replace_bookmark_tags(..., actor="recalibrate")`` per touched
+    bookmark (Phase 1 snapshot + edit-log semantics ride along), and each
+    source tag is tombstoned only AFTER every rewrite succeeded — so a
+    retry after a partial failure re-sweeps live sources and reports
+    fully-applied ones as ``alreadyApplied``.
+    """
+    if not ops:
+        return None, "No ops submitted"
+
+    seen_sources: set[str] = set()
+    seen_targets: set[str] = set()
+    to_run: list[dict] = []  # live sources, submitted order
+    already: list[dict] = []  # sources already tombstoned → skip + report
+    for op in ops:
+        source = op.get("source")
+        target = op.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            return None, "Each op needs string 'source' and 'target'"
+        if not _TARGET_RE.fullmatch(target):
+            return None, f"Invalid target slug (must match ^[a-z]+-[a-z]+$): {target!r}"
+        if source == target:
+            return None, f"Op source equals target: {source!r}"
+        if source in seen_sources or source in seen_targets or target in seen_sources:
+            return None, f"Ops are not disjoint around {source!r} -> {target!r}"
+        seen_sources.add(source)
+        seen_targets.add(target)
+        tag = await db.get_tag_by_slug(source)
+        if tag is None:
+            return None, f"Source tag never existed: {source!r}"
+        if tag.deprecated_as:
+            already.append({"source": source, "target": target})
+        else:
+            to_run.append({"source": source, "target": target})
+
+    mapping = {op["source"]: op["target"] for op in to_run}
+    rewritten: dict[str, int] = dict.fromkeys(mapping, 0)
+    if mapping:
+        rows = await db.get_bookmarks_with_any_tag(list(mapping))
+        for row in rows:
+            tags = list(row["tags"])
+            hit_sources = [s for s in mapping if s in tags]
+            if not hit_sources:
+                continue
+            new_tags = list(dict.fromkeys(mapping.get(t, t) for t in tags))
+            await db.replace_bookmark_tags(row["id"], new_tags, actor="recalibrate")
+            for s in hit_sources:
+                rewritten[s] += 1
+        # Tombstone each source only after ALL bookmark rewrites succeeded.
+        for op in to_run:
+            await db.tombstone_tag(op["source"], op["target"])
+            log.info(
+                "recalibrate_applied",
+                extra={
+                    "source": op["source"],
+                    "target": op["target"],
+                    "rewritten": rewritten[op["source"]],
+                },
+            )
+
+    by_source: dict[str, dict] = {}
+    for op in to_run:
+        by_source[op["source"]] = {
+            "source": op["source"],
+            "target": op["target"],
+            "status": "applied",
+            "bookmarksRewritten": rewritten[op["source"]],
+        }
+    for op in already:
+        by_source[op["source"]] = {
+            "source": op["source"],
+            "target": op["target"],
+            "status": "alreadyApplied",
+            "bookmarksRewritten": 0,
+        }
+    results = [by_source[str(op["source"])] for op in ops]
+    return {"results": results}, None
