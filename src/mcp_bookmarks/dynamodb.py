@@ -61,6 +61,7 @@ def _to_tag(item: dict) -> Tag:
         description=item.get("description", ""),
         usage_count=int(item.get("usage_count", 0)),
         created_at=item.get("created_at"),
+        deprecated_as=item.get("deprecated_as") or None,
     )
 
 
@@ -283,13 +284,14 @@ class DynamoDBDatabase:
     async def get_all_tags(self) -> list[Tag]:
         def _scan():
             resp = self._tags.scan(
-                ProjectionExpression="slug, #n, description, usage_count",
+                ProjectionExpression="slug, #n, description, usage_count, deprecated_as",
                 ExpressionAttributeNames={"#n": "name"},
             )
             return resp.get("Items", [])
 
         items = await _run(_scan)
-        return sorted([_to_tag(i) for i in items], key=lambda t: t.usage_count, reverse=True)
+        live = [i for i in items if not i.get("deprecated_as")]
+        return sorted([_to_tag(i) for i in live], key=lambda t: t.usage_count, reverse=True)
 
     async def search_tags(self, query: str) -> list[Tag]:
         all_tags = await self.get_all_tags()
@@ -430,12 +432,32 @@ class DynamoDBDatabase:
             await _run(_upd)
             reassigned += 1
 
-        await self.delete_tag(source_slug)
+        # Phase 2: tombstone instead of delete (blogmarks convention — tag
+        # rows are never hard-deleted; assignTags resolves deprecated_as
+        # chains at assignment time). Skips delete_tag's redundant
+        # per-bookmark sweep: the loop above already rewrote every row.
+        await self.tombstone_tag(source_slug, target_slug)
         return {
             "source_deleted": source_slug,
             "target": target_slug,
             "bookmarks_reassigned": reassigned,
         }
+
+    async def tombstone_tag(self, slug: str, target: str) -> None:
+        """Tombstone a tag row: SET deprecated_as = target, zero usage_count.
+
+        Never deletes. UpdateItem upserts, so callers must verify the row
+        exists first (merge / recalibrate apply both do).
+        """
+
+        def _upd():
+            self._tags.update_item(
+                Key={"slug": slug},
+                UpdateExpression="SET deprecated_as = :t, usage_count = :zero",
+                ExpressionAttributeValues={":t": target, ":zero": 0},
+            )
+
+        await _run(_upd)
 
     # ── Bookmarks ─────────────────────────────────────────────────────
 

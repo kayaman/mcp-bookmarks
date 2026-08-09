@@ -216,3 +216,39 @@ async def test_get_recent_bookmarks_respects_tags_scope(ddb):
 
     ids = {r["id"] for r in rows}
     assert ids == {"bk-in-scope"}
+
+
+# ── Tombstones (Phase 2) ──────────────────────────────────────────────
+
+
+async def test_merge_tombstones_source_row_instead_of_deleting(ddb):
+    _seed_link("bk-1", ["machine-learning"])
+    _seed_tag("machine-learning", 1)
+    _seed_tag("ml-engineering", 3)
+    await ddb.merge_tags("machine-learning", "ml-engineering")
+    item = _table(_TAGS_TABLE).get_item(Key={"slug": "machine-learning"})["Item"]
+    assert item["deprecated_as"] == "ml-engineering"  # row kept, tombstoned
+    assert item["usage_count"] == 0
+    link = _table(_LINKS_TABLE).get_item(Key={"id": "bk-1"})["Item"]
+    assert "ml-engineering" in link["aiTags"] and "machine-learning" not in link["aiTags"]
+
+
+async def test_get_all_tags_and_search_filter_tombstoned(ddb):
+    _seed_tag("live-tag", 2)
+    _seed_tag("dead-tag", 0)
+    await ddb.tombstone_tag("dead-tag", "live-tag")
+    assert [t.slug for t in await ddb.get_all_tags()] == ["live-tag"]
+    assert [t.slug for t in await ddb.search_tags("tag")] == ["live-tag"]
+
+
+async def test_get_tag_by_slug_exposes_deprecated_as(ddb):
+    _seed_tag("old-name", 0)
+    await ddb.tombstone_tag("old-name", "new-name")
+    tag = await ddb.get_tag_by_slug("old-name")
+    assert tag is not None and tag.deprecated_as == "new-name"
+
+
+async def test_delete_tag_still_hard_deletes(ddb):
+    _seed_tag("doomed-tag", 0)
+    assert await ddb.delete_tag("doomed-tag") is True
+    assert "Item" not in _table(_TAGS_TABLE).get_item(Key={"slug": "doomed-tag"})

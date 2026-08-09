@@ -224,8 +224,12 @@ async def test_merge_tags_reassigns_bookmarks(ddb):
     assert result["target"] == "python"
     assert result["bookmarks_reassigned"] == 1
 
-    # Source tag is gone, bookmark now carries target slug.
-    assert await ddb.get_tag_by_slug("py") is None
+    # Phase 2: merge tombstones the source row instead of hard-deleting it
+    # (deprecated_as records the redirect target) — never None afterward.
+    src = await ddb.get_tag_by_slug("py")
+    assert src is not None
+    assert src.deprecated_as == "python"
+    assert src.usage_count == 0
     fetched = await ddb.get_bookmark_by_id(bk.dynamo_id)
     assert "python" in fetched.tags
     assert "py" not in fetched.tags

@@ -125,6 +125,16 @@ class BookmarkBackend(Protocol):
 
     async def merge_tags(self, source_slug: str, target_slug: str) -> dict: ...
 
+    async def tombstone_tag(self, slug: str, target: str) -> None:
+        """Set deprecated_as = target on an existing tag row; never deletes.
+
+        Definition used across Phase 2: a tag is *live* iff its row exists
+        AND deprecated_as is unset. get_all_tags/search_tags return live
+        tags only; get_tag_by_slug returns tombstoned rows with
+        Tag.deprecated_as set.
+        """
+        ...
+
     # ── Bookmarks ──────────────────────────────────────────────────
 
     async def upsert_bookmark(
