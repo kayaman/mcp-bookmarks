@@ -144,6 +144,9 @@ async def propose(db: BookmarkBackend) -> dict:
             continue
         if source == target or not _TARGET_RE.fullmatch(target):
             continue
+        target_tag = await db.get_tag_by_slug(target)
+        if target_tag is not None and target_tag.deprecated_as:  # tombstoned target — drop
+            continue
         candidates.append(
             {"source": source, "target": target, "reason": str(op.get("reason") or "")}
         )
@@ -201,6 +204,12 @@ async def apply(db: BookmarkBackend, ops: list[dict]) -> tuple[dict | None, str 
         tag = await db.get_tag_by_slug(source)
         if tag is None:
             return None, f"Source tag never existed: {source!r}"
+        target_tag = await db.get_tag_by_slug(target)
+        if target_tag is not None and target_tag.deprecated_as:
+            return (
+                None,
+                f"Target tag is tombstoned: {target!r} (merged into {target_tag.deprecated_as!r})",
+            )
         if tag.deprecated_as:
             already.append({"source": source, "target": target})
         else:

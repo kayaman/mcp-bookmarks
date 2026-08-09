@@ -359,6 +359,24 @@ async def test_merge_tags_raises_when_target_missing(ddb):
         await ddb.merge_tags("source-ok", "missing-tgt")
 
 
+async def test_merge_tags_raises_when_target_tombstoned(ddb):
+    """Merging into an already-tombstoned target must error like an unknown target."""
+    await ddb.create_tag("source-ok", "S", "")
+    await ddb.create_tag("old-target", "Old Target", "")
+    await ddb.tombstone_tag("old-target", "new-target")
+    with pytest.raises(ValueError, match="Target tag 'old-target' not found"):
+        await ddb.merge_tags("source-ok", "old-target")
+
+
+async def test_tag_bookmark_with_tombstoned_tag_raises(ddb):
+    """A tombstoned slug must behave like a missing tag, not a live one."""
+    bk = await ddb.upsert_bookmark(url="https://x.com/tomb", title="Tomb")
+    await ddb.create_tag("old-tag", "Old", "")
+    await ddb.tombstone_tag("old-tag", "new-tag")
+    with pytest.raises(ValueError):
+        await ddb.tag_bookmark(bk.dynamo_id, ["old-tag"])
+
+
 # ── search_tags empty result ──────────────────────────────────────────
 
 

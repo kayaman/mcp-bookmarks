@@ -96,6 +96,22 @@ async def test_propose_drops_invalid_and_conflicting_ops(db, monkeypatch):
     assert [(o["source"], o["target"]) for o in out["ops"]] == [("aa-bb", "cc-dd")]
 
 
+async def test_propose_drops_op_with_tombstoned_target(db, monkeypatch):
+    """A target whose tag row already exists but is tombstoned must be
+    dropped before disjointness — merging onto a hidden slug is unrescuable."""
+    from mcp_bookmarks.services import recalibrate
+
+    await _seed(db, "https://example.com/1", ("aa-bb",))
+    await db.create_tag("cc-dd", "cc-dd")
+    await db.tombstone_tag("cc-dd", "ee-ff")  # cc-dd row exists but is hidden
+    _mock_llm(
+        monkeypatch,
+        json.dumps({"ops": [{"source": "aa-bb", "target": "cc-dd", "reason": "bad"}]}),
+    )
+    out = await recalibrate.propose(db)
+    assert out["ops"] == []
+
+
 async def test_propose_tolerates_markdown_fences(db, monkeypatch):
     from mcp_bookmarks.services import recalibrate
 
@@ -244,6 +260,21 @@ async def test_apply_never_existed_source_400_writes_nothing(db):
         ],
     )
     assert result is None and "ghost-tag" in reason
+    assert (await db.get_bookmark_by_id(bid)).tags == ["aa-bb"]  # untouched
+    assert await db.get_tag_edits() == []
+
+
+async def test_apply_rejects_tombstoned_target_writes_nothing(db):
+    """A target whose row already exists but is tombstoned must be rejected
+    up front — rewriting bookmarks onto it would be an unrescuable strand."""
+    from mcp_bookmarks.services import recalibrate
+
+    bid = await _seed(db, "https://example.com/1", ("aa-bb",))
+    await db.create_tag("cc-dd", "cc-dd")
+    await db.tombstone_tag("cc-dd", "ee-ff")  # cc-dd row exists but is hidden
+    result, reason = await recalibrate.apply(db, [{"source": "aa-bb", "target": "cc-dd"}])
+    assert result is None
+    assert reason is not None and "tombstoned" in reason and "cc-dd" in reason
     assert (await db.get_bookmark_by_id(bid)).tags == ["aa-bb"]  # untouched
     assert await db.get_tag_edits() == []
 

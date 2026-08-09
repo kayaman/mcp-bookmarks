@@ -77,6 +77,15 @@ async def test_tag_bookmark_with_unknown_tag_raises(db):
         await db.tag_bookmark(bk.id, ["nonexistent-tag"])
 
 
+async def test_tag_bookmark_with_tombstoned_tag_raises(db):
+    """A tombstoned slug must behave like a missing tag, not a live one."""
+    bk = await db.upsert_bookmark(url="https://example.com/b", title="B")
+    await db.create_tag("old-tag", "Old", "")
+    await db.tombstone_tag("old-tag", "new-tag")
+    with pytest.raises(ValueError):
+        await db.tag_bookmark(bk.id, ["old-tag"])
+
+
 async def test_get_bookmark_by_id_returns_none_for_missing(db):
     assert await db.get_bookmark_by_id(9999) is None
 

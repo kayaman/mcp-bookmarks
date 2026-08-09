@@ -120,6 +120,15 @@ async def test_merge_tags_raises_when_source_missing(db):
         await db.merge_tags("nonexistent", "machine-learning")
 
 
+async def test_merge_tags_raises_when_target_tombstoned(db):
+    """Merging into an already-tombstoned target must error like an unknown target."""
+    await db.create_tag("source-ok", "Source", "")
+    await db.create_tag("old-target", "Old Target", "")
+    await db.tombstone_tag("old-target", "new-target")
+    with pytest.raises(ValueError, match="Target tag 'old-target' not found"):
+        await db.merge_tags("source-ok", "old-target")
+
+
 # ── untag_bookmark ─────────────────────────────────────────────────
 
 

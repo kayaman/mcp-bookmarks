@@ -219,9 +219,10 @@ with HTTP **502** (Bedrock error or unparseable model output).
 
 Re-validates server-side (never trusts the client's copy): 400
 `invalid_request` — writing **nothing** — for a never-existed source, a
-target not matching `^[a-z]+-[a-z]+$`, or non-disjoint ops (duplicate
-sources, or any op's target appearing as another op's source). Sources that
-are already tombstoned are skipped and reported `alreadyApplied`.
+tombstoned target (merging onto a hidden slug would be an unrescuable
+strand), a target not matching `^[a-z]+-[a-z]+$`, or non-disjoint ops
+(duplicate sources, or any op's target appearing as another op's source).
+Sources that are already tombstoned are skipped and reported `alreadyApplied`.
 
 Execution coalesces ops per bookmark (one rewrite + one edit event per
 bookmark, `actor: "recalibrate"`, snapshot rules from the PUT apply), then
@@ -238,9 +239,13 @@ all of that op's rewrites succeeded — retry after a partial failure is safe.
 (bad shape), `invalid_request` (semantic validation, nothing written),
 `unauthorized`/`forbidden` (write policy).
 
-### `GET /api/tags` — list all tags
+### `GET /api/tags` — list all tags (bm_v1)
 
-Tags are scoped to the authenticated tenant.
+Tags are scoped to the authenticated tenant. Carved out of the static-key
+`/api` surface: authenticates with a **bm_v1 scoped token** via
+`BearerAuthMiddleware` when `MCP_BEARER_AUTH=true`, falling back to the
+static `MCP_API_KEYS` key in keys-on/bearer-off mode. The response excludes
+tombstoned tags — `get_all_tags()` returns live rows only.
 
 ### `GET /api/usage` — monthly usage counter
 

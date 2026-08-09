@@ -403,7 +403,7 @@ class DynamoDBDatabase:
         target = await self.get_tag_by_slug(target_slug)
         if not source:
             raise ValueError(f"Source tag '{source_slug}' not found.")
-        if not target:
+        if not target or target.deprecated_as:
             raise ValueError(f"Target tag '{target_slug}' not found.")
 
         def _scan():
@@ -615,7 +615,7 @@ class DynamoDBDatabase:
             return None
         for slug in tag_slugs:
             t = await self.get_tag_by_slug(slug)
-            if not t:
+            if not t or t.deprecated_as:
                 raise ValueError(f"Tag '{slug}' does not exist. Call create_tag first.")
 
         def _get():

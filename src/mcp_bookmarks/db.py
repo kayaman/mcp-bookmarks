@@ -339,7 +339,7 @@ class Database:
             raise ValueError("Invalid bookmark_id for SQLite (expected integer).")
         for slug in tag_slugs:
             tag = await self.get_tag_by_slug(slug)
-            if not tag or not tag.id:
+            if not tag or not tag.id or tag.deprecated_as:
                 raise ValueError(f"Tag '{slug}' does not exist. Create it first.")
 
             await self.db.execute(
@@ -502,7 +502,7 @@ class Database:
 
         if not source or not source.id:
             raise ValueError(f"Source tag '{source_slug}' not found.")
-        if not target or not target.id:
+        if not target or not target.id or target.deprecated_as:
             raise ValueError(f"Target tag '{target_slug}' not found.")
 
         # Find bookmarks with source tag
