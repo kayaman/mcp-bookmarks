@@ -42,6 +42,12 @@ def _dynamo():
     return boto3.resource("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 
 
+def _tag_edits_table_name() -> str:
+    """Tag-edit event log table. Read at call time (usage_meter env pattern,
+    but call-time so tests can monkeypatch.setenv without module re-import)."""
+    return os.environ.get("TAG_EDITS_TABLE", "").strip() or "blogmarks-tag-edits"
+
+
 def _run(fn, *args, **kwargs):
     """Run a synchronous boto3 call in a thread executor."""
     loop = asyncio.get_event_loop()
@@ -638,6 +644,220 @@ class DynamoDBDatabase:
 
         await _run(_upd)
         return await self.get_bookmark_by_id(key)
+
+    # ── Admin tag editing (Phase 1) ───────────────────────────────────
+
+    async def replace_bookmark_tags(
+        self, bookmark_id: int | str, tags: list[str], *, actor: str = "human"
+    ) -> dict | None:
+        """Replace-set aiTags with snapshot semantics.
+
+        One UpdateItem does the whole links-row mutation:
+          - ``aiTagsOriginal = if_not_exists(aiTagsOriginal, :orig)`` — written
+            by the FIRST mutation of any kind, never updated afterwards;
+          - ``tagsReviewedAt = if_not_exists(tagsReviewedAt, :now)`` — human
+            edits only (clause omitted for other actors).
+        Then usage_count is reconciled ±1 (net-new code in DynamoDB mode) and
+        one edit event is appended to TAG_EDITS_TABLE.
+        """
+        key = self._dynamo_key(bookmark_id)
+        if not key:
+            return None
+
+        def _get():
+            return self._links.get_item(Key={"id": key}).get("Item")
+
+        item = await _run(_get)
+        if not item or not item.get("url") or not self._item_org_visible(item):
+            return None
+
+        before = list(item.get("aiTags", []))
+        after = list(dict.fromkeys(tags))
+        added = [t for t in after if t not in before]
+        removed = [t for t in before if t not in after]
+        now = datetime.now(UTC).isoformat()
+
+        expr = "SET aiTags = :tags, aiTagsOriginal = if_not_exists(aiTagsOriginal, :orig)"
+        values: dict[str, Any] = {":tags": after, ":orig": before}
+        if actor == "human":
+            expr += ", tagsReviewedAt = if_not_exists(tagsReviewedAt, :now)"
+            values[":now"] = now
+
+        def _upd():
+            self._links.update_item(
+                Key={"id": key}, UpdateExpression=expr, ExpressionAttributeValues=values
+            )
+
+        await _run(_upd)
+        await self._reconcile_tag_usage(added=added, removed=removed)
+        await self._put_tag_edit_event(
+            bookmark_id=key,
+            before=before,
+            after=after,
+            added=added,
+            removed=removed,
+            actor=actor,
+            ts=now,
+        )
+        return {
+            "bookmark_id": key,
+            "before": before,
+            "after": after,
+            "added": added,
+            "removed": removed,
+        }
+
+    async def _reconcile_tag_usage(self, *, added: list[str], removed: list[str]) -> None:
+        """±1 usage_count per added/removed tag; create missing rows at 1.
+
+        Drift risk on failure between the links write and here is accepted —
+        blogmarks' weekly recomputeUsageCounts() is the self-heal (currently
+        disabled in prod; see spec Known risks).
+        """
+        from botocore.exceptions import ClientError
+
+        for slug in added:
+            if await self.get_tag_by_slug(slug) is None:
+
+                def _put(s=slug):
+                    self._tags.put_item(
+                        Item={
+                            "slug": s,
+                            "name": s,
+                            "description": "",
+                            "usage_count": 1,
+                            "created_at": datetime.now(UTC).isoformat(),
+                        }
+                    )
+
+                await _run(_put)
+            else:
+
+                def _inc(s=slug):
+                    self._tags.update_item(
+                        Key={"slug": s},
+                        UpdateExpression="ADD usage_count :one",
+                        ExpressionAttributeValues={":one": 1},
+                    )
+
+                await _run(_inc)
+        for slug in removed:
+
+            def _dec(s=slug):
+                try:
+                    self._tags.update_item(
+                        Key={"slug": s},
+                        UpdateExpression="SET usage_count = usage_count - :one",
+                        ConditionExpression="attribute_exists(slug) AND usage_count >= :one",
+                        ExpressionAttributeValues={":one": 1},
+                    )
+                except ClientError as exc:  # missing row / already 0 → skip
+                    if (
+                        exc.response.get("Error", {}).get("Code")
+                        != "ConditionalCheckFailedException"
+                    ):
+                        raise
+
+            await _run(_dec)
+
+    async def _put_tag_edit_event(
+        self,
+        *,
+        bookmark_id: str,
+        before: list[str],
+        after: list[str],
+        added: list[str],
+        removed: list[str],
+        actor: str,
+        ts: str,
+    ) -> None:
+        user_id = self._user_id()
+
+        def _put():
+            _dynamo().Table(_tag_edits_table_name()).put_item(
+                Item={
+                    "userId": user_id,
+                    "sk": f"{ts}#{bookmark_id}",
+                    "bookmarkId": bookmark_id,
+                    "before": before,
+                    "after": after,
+                    "added": added,
+                    "removed": removed,
+                    "actor": actor,
+                    "ts": ts,
+                }
+            )
+
+        await _run(_put)
+
+    async def get_tag_edits(self, limit: int = 100) -> list[dict]:
+        """Edit history, newest first — single PK Query on userId."""
+        from boto3.dynamodb.conditions import Key
+
+        user_id = self._user_id()
+        lim = max(1, min(int(limit), 1000))
+
+        def _query():
+            resp = _dynamo().Table(_tag_edits_table_name()).query(
+                KeyConditionExpression=Key("userId").eq(user_id),
+                ScanIndexForward=False,
+                Limit=lim,
+            )
+            return resp.get("Items", [])
+
+        items = await _run(_query)
+        return [
+            {
+                "bookmarkId": i.get("bookmarkId"),
+                "before": list(i.get("before", [])),
+                "after": list(i.get("after", [])),
+                "added": list(i.get("added", [])),
+                "removed": list(i.get("removed", [])),
+                "actor": i.get("actor"),
+                "ts": i.get("ts"),
+            }
+            for i in items
+        ]
+
+    async def get_recent_bookmarks(self, limit: int = 50) -> list[dict]:
+        """Recent bookmarks for the request user, incl. the snapshot fields.
+
+        Queries the userId GSI newest-savedAt-first when configured; falls
+        back to a filtered scan. Org/scope visibility is enforced HERE in
+        the async context (contextvars don't cross run_in_executor — same
+        caveat as _search_links).
+        """
+        from boto3.dynamodb.conditions import Key
+
+        user_id = self._user_id()
+        lim = max(1, min(int(limit), 200))
+
+        def _fetch():
+            if _USER_INDEX:
+                resp = self._links.query(
+                    IndexName=_USER_INDEX,
+                    KeyConditionExpression=Key("userId").eq(user_id),
+                    ScanIndexForward=False,
+                    Limit=lim,
+                )
+            else:
+                resp = self._links.scan(FilterExpression=Attr("userId").eq(user_id))
+            return resp.get("Items", [])
+
+        items = await _run(_fetch)
+        items = [i for i in items if i.get("url") and self._item_org_visible(i)]
+        items.sort(key=lambda i: str(i.get("savedAt") or ""), reverse=True)
+        return [
+            {
+                "id": i.get("id"),
+                "url": i.get("url"),
+                "title": i.get("ogTitle") or i.get("title") or i.get("url"),
+                "aiTags": list(i.get("aiTags", [])),
+                "aiTagsOriginal": list(i["aiTagsOriginal"]) if "aiTagsOriginal" in i else None,
+                "tagsReviewedAt": i.get("tagsReviewedAt"),
+            }
+            for i in items[:lim]
+        ]
 
     async def search_bookmarks(
         self, query: str | None = None, tag: str | None = None, limit: int = 20

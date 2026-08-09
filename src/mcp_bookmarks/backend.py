@@ -167,6 +167,26 @@ class BookmarkBackend(Protocol):
 
     async def delete_bookmark(self, bookmark_id: int | str) -> bool: ...
 
+    # ── Admin tag editing (Phase 1) ────────────────────────────────
+
+    async def replace_bookmark_tags(
+        self,
+        bookmark_id: int | str,
+        tags: list[str],
+        *,
+        actor: str = "human",
+    ) -> dict | None:
+        """Replace-set tags; returns {bookmark_id, before, after, added, removed} or None."""
+        ...
+
+    async def get_recent_bookmarks(self, limit: int = 50) -> list[dict]:
+        """Recent bookmarks with camelCase wire keys incl. aiTagsOriginal/tagsReviewedAt."""
+        ...
+
+    async def get_tag_edits(self, limit: int = 100) -> list[dict]:
+        """Edit history for the request user, newest first."""
+        ...
+
     # ── Aggregate / export ─────────────────────────────────────────
 
     async def get_stats(self) -> dict: ...
