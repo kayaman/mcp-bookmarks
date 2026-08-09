@@ -53,7 +53,7 @@ from .backend import (
     UnsupportedCapability,
     backend_capabilities_payload,
 )
-from .bearer_auth import bm_v1_api_route, tag_write_policy_error
+from .bearer_auth import bearer_auth_enabled, bm_v1_api_route, tag_write_policy_error
 from .db import DEFAULT_DB_PATH, Database
 from .security_headers import compute_script_hash
 from .services import billing as billing_service
@@ -126,10 +126,18 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
         # full /api-prefixed path when mounted — strip it before matching.
         # When api_app is exercised standalone (no Mount, as in the
         # TenantAuthMiddleware unit tests) the prefix is already absent.
+        #
+        # This carve-out must only apply when BearerAuthMiddleware is
+        # actually installed on the outer app (MCP_BEARER_AUTH on) — if
+        # bearer auth is off but MCP_API_KEYS is set, nothing upstream
+        # verifies these requests, so falling through unconditionally would
+        # leave the carved routes completely unauthenticated. When bearer
+        # auth is off, these routes fall back to the static-key check below
+        # like every other /api path.
         api_path = request.url.path
         if api_path.startswith("/api"):
             api_path = api_path[len("/api") :]
-        if bm_v1_api_route(request.method, api_path):
+        if bearer_auth_enabled() and bm_v1_api_route(request.method, api_path):
             return await call_next(request)
         ok, tenant = require_api_key(request.headers)
         if not ok:

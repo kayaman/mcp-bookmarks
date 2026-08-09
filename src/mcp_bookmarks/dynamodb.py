@@ -845,7 +845,15 @@ class DynamoDBDatabase:
             return resp.get("Items", [])
 
         items = await _run(_fetch)
-        items = [i for i in items if i.get("url") and self._item_org_visible(i)]
+        # Org + scope enforcement runs HERE (async context), mirroring
+        # _search_links: contextvars don't propagate into run_in_executor
+        # threads, so this post-filter is the actual guard — a tags-scoped
+        # token must not see bookmarks outside its scope via this endpoint.
+        items = [
+            i
+            for i in items
+            if i.get("url") and self._item_org_visible(i) and self._item_scope_visible(i)
+        ]
         items.sort(key=lambda i: str(i.get("savedAt") or ""), reverse=True)
         return [
             {

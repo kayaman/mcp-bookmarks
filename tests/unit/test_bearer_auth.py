@@ -718,5 +718,84 @@ async def test_composed_mount_exempts_carved_route_from_tenant_auth(
     assert r_plain.json()["error"]["code"] == "unauthorized"
 
 
+async def test_carved_routes_require_static_key_when_bearer_auth_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """keys-on/bearer-off: the carve-out in TenantAuthMiddleware must not
+    apply when BearerAuthMiddleware isn't actually installed on the outer
+    app (MCP_BEARER_AUTH unset/off) — nothing upstream would have verified
+    these requests, so falling through unconditionally would leave PUT
+    .../tags, GET .../recent and GET /tag-edits completely unauthenticated
+    in a keys-on/bearer-off deployment. api_app is exercised standalone here
+    (no /api prefix, no Mount), matching the existing TenantAuthMiddleware
+    unit-test convention.
+    """
+    from mcp_bookmarks.api import create_api_app
+
+    monkeypatch.setenv("BOOKMARKS_DB_PATH", str(tmp_path / "bookmarks.db"))
+    monkeypatch.setenv("MCP_API_KEYS", "secret-key:tenant-a")
+    monkeypatch.delenv("MCP_BEARER_AUTH", raising=False)
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+
+    app = create_api_app()
+
+    # No credentials at all: TenantAuthMiddleware must reject, not exempt.
+    r_put = await _send(app, "PUT", "/bookmarks/abc/tags")
+    assert r_put.status_code == 401
+    assert r_put.json()["error"]["code"] == "unauthorized"
+
+    r_recent = await _send(app, "GET", "/bookmarks/recent")
+    assert r_recent.status_code == 401
+    assert r_recent.json()["error"]["code"] == "unauthorized"
+
+    r_edits = await _send(app, "GET", "/tag-edits")
+    assert r_edits.status_code == 401
+    assert r_edits.json()["error"]["code"] == "unauthorized"
+
+    # A valid static key lets the same three routes through to their real
+    # handlers (falling back to ordinary tenant auth, like every other
+    # /api path).
+    r_put_ok = await _send(app, "PUT", "/bookmarks/abc/tags", headers={"x-api-key": "secret-key"})
+    assert r_put_ok.status_code == 400  # empty body -> invalid_json, but NOT 401
+    assert r_put_ok.json()["error"]["code"] == "invalid_json"
+
+    r_recent_ok = await _send(
+        app, "GET", "/bookmarks/recent", headers={"x-api-key": "secret-key"}
+    )
+    assert r_recent_ok.status_code == 200
+
+    r_edits_ok = await _send(app, "GET", "/tag-edits", headers={"x-api-key": "secret-key"})
+    assert r_edits_ok.status_code == 200
+
+
+async def test_composed_mount_post_tags_still_requires_static_key(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Cheap composed-topology check for the additive POST: outer
+    BearerAuthMiddleware + Mount("/api", api_app) + inner TenantAuthMiddleware,
+    with MCP_API_KEYS set and MCP_BEARER_AUTH on. POST is never carved out
+    (only PUT is — see bm_v1_api_route), so it must stay tenant-guarded even
+    through the full production stack: no static key -> 401.
+    """
+    from starlette.routing import Mount
+
+    from mcp_bookmarks.api import create_api_app
+
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    monkeypatch.setenv("MCP_API_KEYS", "secret-key:tenant-a")
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+
+    api_app = create_api_app()  # mounts TenantAuthMiddleware (MCP_API_KEYS is set)
+    outer = Starlette(
+        routes=[Mount("/api", app=api_app)],
+        middleware=[Middleware(BearerAuthMiddleware)],
+    )
+
+    r = await _send(outer, "POST", "/api/bookmarks/abc/tags")
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "unauthorized"
+
+
 # Silence "unused" warnings for the Any import on stricter linters.
 _: Any = None

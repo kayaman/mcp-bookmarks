@@ -196,3 +196,23 @@ async def test_get_recent_bookmarks_contract_fields_with_nulls(ddb):
 
 async def test_replace_missing_bookmark_returns_none(ddb):
     assert await ddb.replace_bookmark_tags("nope", ["a"]) is None
+
+
+async def test_get_recent_bookmarks_respects_tags_scope(ddb):
+    """A tags-scoped read token must not see the whole private corpus via
+    /api/bookmarks/recent — mirrors the ``_item_scope_visible`` enforcement
+    already covered for ``search_bookmarks`` in test_dynamodb_scope.py.
+    """
+    from mcp_bookmarks.request_context import reset_request_identity, set_request_identity
+
+    _seed_link("bk-in-scope", ["python"], saved_at="2026-08-01T00:00:00+00:00")
+    _seed_link("bk-out-of-scope", ["rust-lang"], saved_at="2026-08-02T00:00:00+00:00")
+
+    tokens = set_request_identity("u-test", "default", {"type": "tags", "tags": ["python"]})
+    try:
+        rows = await ddb.get_recent_bookmarks(limit=50)
+    finally:
+        reset_request_identity(tokens)
+
+    ids = {r["id"] for r in rows}
+    assert ids == {"bk-in-scope"}
