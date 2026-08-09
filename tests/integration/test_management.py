@@ -99,7 +99,12 @@ async def test_merge_tags_reassigns_bookmarks(db):
     assert result["target"] == "machine-learning"
     assert result["bookmarks_reassigned"] == 2  # bk1 + bk2
 
-    assert await db.get_tag_by_slug("ml") is None
+    # Phase 2: merge tombstones the source row instead of hard-deleting it
+    # (deprecated_as records the redirect target) — never None afterward.
+    src = await db.get_tag_by_slug("ml")
+    assert src is not None
+    assert src.deprecated_as == "machine-learning"
+    assert src.usage_count == 0
     for bk_id in (bk1.id, bk2.id, bk3.id):
         bk = await db.get_bookmark_by_id(bk_id)
         assert "machine-learning" in bk.tags

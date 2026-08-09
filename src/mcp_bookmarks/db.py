@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tags (
     name        TEXT    NOT NULL,
     description TEXT    DEFAULT '',
     usage_count INTEGER DEFAULT 0,
+    deprecated_as TEXT,
     created_at  TEXT    DEFAULT (datetime('now')),
     UNIQUE (slug, tenant_id)
 );
@@ -154,6 +155,8 @@ class Database:
             await self.db.execute(
                 "ALTER TABLE tags ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
             )
+        if "deprecated_as" not in tag_cols:
+            await self.db.execute("ALTER TABLE tags ADD COLUMN deprecated_as TEXT")
 
         # Indices on tenant_id columns must be created after migration (column may be new).
         await self.db.execute(
@@ -177,7 +180,8 @@ class Database:
     async def get_all_tags(self) -> list[Tag]:
         """Return every canonical tag for this tenant, ordered by usage."""
         cursor = await self.db.execute(
-            "SELECT * FROM tags WHERE tenant_id = ? ORDER BY usage_count DESC, name ASC",
+            "SELECT * FROM tags WHERE tenant_id = ? AND deprecated_as IS NULL "
+            "ORDER BY usage_count DESC, name ASC",
             (self.tenant_id,),
         )
         rows = await cursor.fetchall()
@@ -197,7 +201,7 @@ class Database:
         """Search tags by slug or name (partial match) for this tenant."""
         cursor = await self.db.execute(
             """SELECT * FROM tags
-               WHERE tenant_id = ?
+               WHERE tenant_id = ? AND deprecated_as IS NULL
                  AND (slug LIKE ? OR name LIKE ? OR description LIKE ?)
                ORDER BY usage_count DESC""",
             (self.tenant_id, f"%{query}%", f"%{query}%", f"%{query}%"),
@@ -244,6 +248,7 @@ class Database:
             description=r["description"],
             usage_count=r["usage_count"],
             created_at=r["created_at"],
+            deprecated_as=r["deprecated_as"],
         )
 
     # ── Bookmarks ─────────────────────────────────────────────────────
@@ -516,9 +521,14 @@ class Database:
             )
             reassigned += 1
 
-        # Remove source tag associations and delete it
+        # Remove source tag associations and TOMBSTONE the row (Phase 2:
+        # merge never hard-deletes; deprecated_as records the redirect target
+        # — blogmarks' assignTags resolves these chains at assignment time).
         await self.db.execute("DELETE FROM bookmark_tags WHERE tag_id = ?", (source.id,))
-        await self.db.execute("DELETE FROM tags WHERE id = ?", (source.id,))
+        await self.db.execute(
+            "UPDATE tags SET deprecated_as = ?, usage_count = 0 WHERE id = ?",
+            (target_slug, source.id),
+        )
 
         # Recalculate target usage count
         await self.db.execute(
@@ -534,6 +544,18 @@ class Database:
             "target": target_slug,
             "bookmarks_reassigned": reassigned,
         }
+
+    async def tombstone_tag(self, slug: str, target: str) -> None:
+        """Tombstone a tag row: SET deprecated_as = target, zero usage_count.
+
+        Never deletes the row. Callers must verify the row exists first
+        (recalibrate apply / merge both do).
+        """
+        await self.db.execute(
+            "UPDATE tags SET deprecated_as = ?, usage_count = 0 WHERE slug = ? AND tenant_id = ?",
+            (target, slug, self.tenant_id),
+        )
+        await self.db.commit()
 
     async def untag_bookmark(self, bookmark_id: int | str, tag_slugs: list[str]) -> Bookmark | None:
         """Remove specific tags from a bookmark."""

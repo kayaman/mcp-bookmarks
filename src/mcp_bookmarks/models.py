@@ -34,6 +34,10 @@ class Tag(BaseModel):
         description="Scope of this tag so the LLM can decide when to reuse it",
     )
     usage_count: int = Field(default=0, description="How many bookmarks use this tag")
+    deprecated_as: str | None = Field(
+        default=None,
+        description="Tombstone: slug this tag was merged/renamed into. None = live.",
+    )
     created_at: datetime | None = None
 
 

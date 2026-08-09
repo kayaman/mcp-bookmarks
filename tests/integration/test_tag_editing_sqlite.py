@@ -91,3 +91,65 @@ async def test_recent_bookmarks_shape_and_limit(db):
     assert len(rows) == 2
     assert set(rows[0]) == {"id", "url", "title", "aiTags", "aiTagsOriginal", "tagsReviewedAt"}
     assert rows[0]["aiTagsOriginal"] is None  # null where absent
+
+
+# ── Tombstones (Phase 2) ──────────────────────────────────────────────
+
+
+async def test_merge_tombstones_source_instead_of_deleting(db):
+    bid = await _seed(db, tags=("machine-learning", "ml-engineering"))
+    await db.merge_tags("machine-learning", "ml-engineering")
+    src = await db.get_tag_by_slug("machine-learning")
+    assert src is not None  # row still exists — never hard-deleted by merge
+    assert src.deprecated_as == "ml-engineering"
+    assert src.usage_count == 0
+    bm = await db.get_bookmark_by_id(bid)
+    assert "ml-engineering" in bm.tags and "machine-learning" not in bm.tags
+
+
+async def test_get_all_tags_and_search_filter_tombstoned(db):
+    await db.create_tag("live-tag", "live-tag")
+    await db.create_tag("dead-tag", "dead-tag")
+    await db.tombstone_tag("dead-tag", "live-tag")
+    assert [t.slug for t in await db.get_all_tags()] == ["live-tag"]
+    assert [t.slug for t in await db.search_tags("tag")] == ["live-tag"]
+
+
+async def test_get_tag_by_slug_still_returns_tombstoned_row(db):
+    await db.create_tag("old-name", "old-name")
+    await db.tombstone_tag("old-name", "new-name")
+    tag = await db.get_tag_by_slug("old-name")
+    assert tag is not None and tag.deprecated_as == "new-name"
+    live = await db.get_tag_by_slug("live-missing")
+    assert live is None  # never-existed stays None
+
+
+async def test_delete_tag_still_hard_deletes(db):
+    await db.create_tag("doomed-tag", "doomed-tag")
+    assert await db.delete_tag("doomed-tag") is True
+    assert await db.get_tag_by_slug("doomed-tag") is None
+
+
+async def test_migrate_adds_deprecated_as_to_legacy_db(tmp_path):
+    """Old DBs created before Phase 2 lack the column; _migrate adds it."""
+    import sqlite3
+
+    from mcp_bookmarks.db import Database
+
+    p = tmp_path / "legacy.db"
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL,"
+        " tenant_id TEXT NOT NULL DEFAULT 'default', name TEXT NOT NULL,"
+        " description TEXT DEFAULT '', usage_count INTEGER DEFAULT 0,"
+        " created_at TEXT, UNIQUE (slug, tenant_id))"
+    )
+    conn.commit()
+    conn.close()
+    db = Database(p)
+    await db.connect()
+    try:
+        await db.create_tag("fresh-tag", "fresh-tag")
+        assert [t.slug for t in await db.get_all_tags()] == ["fresh-tag"]
+    finally:
+        await db.close()
