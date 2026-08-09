@@ -14,6 +14,7 @@ Handlers previously called `db.create_tag`, `db.tag_bookmark`,
 from __future__ import annotations
 
 import logging
+import re
 
 from ..backend import BookmarkBackend
 from ..models import Bookmark, Tag
@@ -94,3 +95,37 @@ async def untag_bookmark(
     *, db: BookmarkBackend, bookmark_id: int | str, tag_slugs: list[str]
 ) -> Bookmark | None:
     return await db.untag_bookmark(bookmark_id, tag_slugs)
+
+
+# ── Admin tag editing (Phase 1): normalization + validation ────────
+
+_TAG_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+MAX_TAG_LENGTH = 30
+MAX_TAGS_PER_BOOKMARK = 10
+
+
+def normalize_and_validate_tags(raw: list[str]) -> tuple[list[str] | None, str | None]:
+    """Normalize submitted tags and validate the result.
+
+    Normalization: strip leading '#', lowercase, trim, spaces→hyphens;
+    dedupe preserving order. Validation: each slug matches
+    ``^[a-z0-9]+(-[a-z0-9]+)*$`` and is ≤30 chars; ≤10 tags per bookmark.
+
+    Returns ``(normalized, None)`` on success or ``(None, reason)`` on the
+    first failure — callers map ``reason`` to a 400 invalid_request and
+    write NOTHING.
+    """
+    normalized: list[str] = []
+    for original in raw:
+        slug = original.strip().lstrip("#").strip().lower().replace(" ", "-")
+        if not slug:
+            return None, f"Empty tag after normalization: {original!r}"
+        if len(slug) > MAX_TAG_LENGTH:
+            return None, f"Tag too long (>{MAX_TAG_LENGTH} chars): {slug!r}"
+        if not _TAG_SLUG_RE.fullmatch(slug):
+            return None, f"Invalid tag slug: {slug!r}"
+        if slug not in normalized:
+            normalized.append(slug)
+    if len(normalized) > MAX_TAGS_PER_BOOKMARK:
+        return None, f"Too many tags ({len(normalized)} > {MAX_TAGS_PER_BOOKMARK})"
+    return normalized, None

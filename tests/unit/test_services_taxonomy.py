@@ -150,3 +150,53 @@ async def test_untag_bookmark_forwards():
     db = _FakeBackend()
     await taxonomy.untag_bookmark(db=db, bookmark_id="x", tag_slugs=["a"])
     assert ("untag_bookmark", {"bookmark_id": "x", "tag_slugs": ["a"]}) in db.calls
+
+
+# ── normalize_and_validate_tags (admin tag editing, Phase 1) ─────────
+
+
+def test_normalize_strips_hash_lowercases_trims_and_hyphenates():
+    tags, err = taxonomy.normalize_and_validate_tags(["#Machine Learning", "  PyThOn  "])
+    assert err is None
+    assert tags == ["machine-learning", "python"]
+
+
+def test_normalize_dedupes_preserving_order():
+    tags, err = taxonomy.normalize_and_validate_tags(["python", "#python", "web"])
+    assert err is None
+    assert tags == ["python", "web"]
+
+
+def test_normalize_allows_empty_list():
+    """Replace-set with [] clears the bookmark's tags."""
+    tags, err = taxonomy.normalize_and_validate_tags([])
+    assert err is None
+    assert tags == []
+
+
+def test_normalize_rejects_invalid_slug_characters():
+    tags, err = taxonomy.normalize_and_validate_tags(["bad_tag"])
+    assert tags is None
+    assert err is not None and "bad_tag" in err
+
+
+def test_normalize_rejects_double_hyphen_from_multiple_spaces():
+    tags, _err = taxonomy.normalize_and_validate_tags(["a  b"])
+    assert tags is None  # "a--b" fails the slug regex
+
+
+def test_normalize_rejects_over_30_chars():
+    tags, err = taxonomy.normalize_and_validate_tags(["x" * 31])
+    assert tags is None
+    assert err is not None and "long" in err
+
+
+def test_normalize_rejects_more_than_10_tags():
+    tags, err = taxonomy.normalize_and_validate_tags([f"tag-{i}" for i in range(11)])
+    assert tags is None
+    assert err is not None and "Too many" in err
+
+
+def test_normalize_rejects_empty_after_normalization():
+    tags, _err = taxonomy.normalize_and_validate_tags(["#"])
+    assert tags is None
