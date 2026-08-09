@@ -933,7 +933,7 @@ requires-dist = [
     { name = "hnswlib", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "hnswlib", marker = "extra == 'semantic'", specifier = ">=0.8.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.2.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.2.0,<2.0" },
     { name = "moto", extras = ["dynamodb"], marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26.0" },
     { name = "numpy", marker = "extra == 'semantic'", specifier = ">=1.26.0" },
