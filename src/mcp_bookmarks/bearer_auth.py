@@ -46,6 +46,11 @@ _PROTECTED_PREFIXES = ("/mcp", "/sse", "/messages")
 # scoped token instead of the static MCP_API_KEYS (admin tag editing, Phase 1).
 _BM_V1_GET_ROUTES = frozenset({"/bookmarks/recent", "/tag-edits"})
 
+# /api subpaths that authenticate with bm_v1 for POST (recalibrate, Phase 2).
+# Exact-path matches ONLY — the additive POST /bookmarks/{id}/tags must keep
+# static-key tenant auth.
+_BM_V1_POST_ROUTES = frozenset({"/tags/recalibrate", "/tags/recalibrate/apply"})
+
 
 def bearer_auth_enabled() -> bool:
     return os.environ.get("MCP_BEARER_AUTH", "").strip().lower() in ("1", "true", "yes")
@@ -58,10 +63,13 @@ def bm_v1_api_route(method: str, api_path: str) -> bool:
     shape TenantAuthMiddleware sees inside the mounted app;
     BearerAuthMiddleware strips the prefix before calling. The additive
     ``POST /bookmarks/{id}/tags`` keeps static-key auth; only the
-    replace-set ``PUT`` on the same path is carved out.
+    replace-set ``PUT`` on the same path and the two exact-path
+    recalibrate POSTs are carved out.
     """
     if method == "GET":
         return api_path in _BM_V1_GET_ROUTES
+    if method == "POST":
+        return api_path in _BM_V1_POST_ROUTES
     return method == "PUT" and api_path.startswith("/bookmarks/") and api_path.endswith("/tags")
 
 

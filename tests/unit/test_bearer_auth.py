@@ -797,5 +797,74 @@ async def test_composed_mount_post_tags_still_requires_static_key(
     assert r.json()["error"]["code"] == "unauthorized"
 
 
+# ── Recalibrate carve-out (Phase 2) ────────────────────────────────────
+
+
+def test_bm_v1_api_route_recalibrate_paths():
+    from mcp_bookmarks.bearer_auth import bm_v1_api_route
+
+    assert bm_v1_api_route("POST", "/tags/recalibrate") is True
+    assert bm_v1_api_route("POST", "/tags/recalibrate/apply") is True
+    # Exact-path only — nothing else gains bm_v1 POST auth.
+    assert bm_v1_api_route("POST", "/tags/recalibrate/extra") is False
+    assert bm_v1_api_route("POST", "/bookmarks/abc/tags") is False  # additive POST untouched
+    assert bm_v1_api_route("GET", "/tags/recalibrate") is False
+
+
+def _app_with_recalibrate_routes() -> Starlette:
+    async def echo(req: Request) -> JSONResponse:
+        return JSONResponse({"auth_kind": getattr(req.state, "auth_kind", None)})
+
+    return Starlette(
+        routes=[
+            Route("/api/tags/recalibrate", echo, methods=["POST"]),
+            Route("/api/tags/recalibrate/apply", echo, methods=["POST"]),
+            Route("/api/bookmarks/{bid}/tags", echo, methods=["POST"]),
+        ],
+        middleware=[Middleware(BearerAuthMiddleware)],
+    )
+
+
+async def test_recalibrate_posts_require_bearer(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    app = _app_with_recalibrate_routes()
+    assert (await _send(app, "POST", "/api/tags/recalibrate")).status_code == 401
+    assert (await _send(app, "POST", "/api/tags/recalibrate/apply")).status_code == 401
+    # The additive POST stays delegated to the inner static-key middleware.
+    assert (await _send(app, "POST", "/api/bookmarks/abc/tags")).status_code == 200
+
+
+async def test_recalibrate_routes_static_key_when_bearer_auth_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """keys-on/bearer-off: with BearerAuthMiddleware not installed, the new
+    routes must fall back to static-key auth like every other /api path —
+    never unauthenticated."""
+    from mcp_bookmarks.api import create_api_app
+
+    monkeypatch.setenv("BOOKMARKS_DB_PATH", str(tmp_path / "bookmarks.db"))
+    monkeypatch.setenv("MCP_API_KEYS", "secret-key:tenant-a")
+    monkeypatch.delenv("MCP_BEARER_AUTH", raising=False)
+    monkeypatch.delenv("DYNAMODB_MODE", raising=False)
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.recalibrate.converse_text",
+        lambda prompt, *, system=None, max_tokens=2000: '{"ops": []}',
+    )
+
+    app = create_api_app()
+    # No credentials: rejected.
+    assert (await _send(app, "POST", "/tags/recalibrate")).status_code == 401
+    assert (await _send(app, "POST", "/tags/recalibrate/apply")).status_code == 401
+    # Valid static key reaches the real handlers.
+    r_prop = await _send(app, "POST", "/tags/recalibrate", headers={"x-api-key": "secret-key"})
+    assert r_prop.status_code == 200
+    assert r_prop.json() == {"ops": [], "editsConsidered": 0, "tagsConsidered": 0}
+    r_apply = await _send(
+        app, "POST", "/tags/recalibrate/apply", headers={"x-api-key": "secret-key"}
+    )
+    assert r_apply.status_code == 400  # empty body → invalid_json, but NOT 401
+    assert r_apply.json()["error"]["code"] == "invalid_json"
+
+
 # Silence "unused" warnings for the Any import on stricter linters.
 _: Any = None

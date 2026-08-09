@@ -214,3 +214,116 @@ async def test_tag_edits_newest_first(monkeypatch, tmp_path):
     assert edits[0]["after"] == ["rust-lang"]
     assert set(edits[0]) == {"bookmarkId", "before", "after", "added", "removed", "actor", "ts"}
     assert edits[0]["actor"] == "human"
+
+
+# ── POST /api/tags/recalibrate + /apply ───────────────────────────────
+
+
+def _mock_llm(monkeypatch, payload: str):
+    monkeypatch.setattr(
+        "mcp_bookmarks.services.recalibrate.converse_text",
+        lambda prompt, *, system=None, max_tokens=2000: payload,
+    )
+
+
+async def test_recalibrate_propose_contract(monkeypatch, tmp_path):
+    import json
+
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        await _seed_bookmark(db_path, "https://example.com/1", ("machine-learning",))
+        _mock_llm(
+            monkeypatch,
+            json.dumps(
+                {"ops": [{"source": "machine-learning", "target": "ml-engineering", "reason": "r"}]}
+            ),
+        )
+        r = await client.post("/tags/recalibrate")  # propose takes no body
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ops"] == [
+        {
+            "kind": "rename",
+            "source": "machine-learning",
+            "target": "ml-engineering",
+            "bookmarksAffected": 1,
+            "reason": "r",
+        }
+    ]
+    assert body["editsConsidered"] == 0 and body["tagsConsidered"] == 1
+
+
+async def test_recalibrate_propose_502_on_model_failure(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        _mock_llm(monkeypatch, "not json at all")
+        r = await client.post("/tags/recalibrate")
+    assert r.status_code == 502
+    assert r.json()["error"]["code"] == "service_unavailable"
+
+
+async def test_recalibrate_apply_applies_and_tombstones(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        bid = await _seed_bookmark(db_path, "https://example.com/1", ("webdev",))
+        r = await client.post(
+            "/tags/recalibrate/apply",
+            json={"ops": [{"source": "webdev", "target": "web-development"}]},
+        )
+        assert r.status_code == 200
+        assert r.json() == {
+            "results": [
+                {
+                    "source": "webdev",
+                    "target": "web-development",
+                    "status": "applied",
+                    "bookmarksRewritten": 1,
+                }
+            ]
+        }
+        assert await _tags_of(db_path, bid) == ["web-development"]
+
+
+async def test_recalibrate_apply_400_invalid_request_writes_nothing(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, db_path):
+        bid = await _seed_bookmark(db_path, "https://example.com/1", ("aa-bb",))
+        r = await client.post(
+            "/tags/recalibrate/apply",
+            json={"ops": [{"source": "ghost-tag", "target": "cc-dd"}]},
+        )
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == "invalid_request"
+        assert await _tags_of(db_path, bid) == ["aa-bb"]
+        assert (await client.get("/tag-edits")).json()["edits"] == []
+
+
+async def test_recalibrate_apply_422_on_bad_shape(monkeypatch, tmp_path):
+    async with _app_client(monkeypatch, tmp_path) as (client, _):
+        r = await client.post("/tags/recalibrate/apply", json={"ops": [{"source": "only"}]})
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+async def test_recalibrate_endpoints_gated_by_write_policy_first(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    async with _app_client(monkeypatch, tmp_path, auth_state={}) as (client, _):
+        assert (await client.post("/tags/recalibrate")).status_code == 401
+        assert (
+            await client.post(
+                "/tags/recalibrate/apply", json={"ops": [{"source": "a-b", "target": "c-d"}]}
+            )
+        ).status_code == 401
+
+
+async def test_recalibrate_endpoints_reject_tags_scoped_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("MCP_BEARER_AUTH", "true")
+    state = {
+        "auth_kind": "scoped_token",
+        "write_enabled": True,
+        "scope": {"type": "tags", "tags": ["python"]},
+        "user_id": "u-1",
+    }
+    async with _app_client(monkeypatch, tmp_path, auth_state=state) as (client, _):
+        assert (await client.post("/tags/recalibrate")).status_code == 403
+        assert (
+            await client.post(
+                "/tags/recalibrate/apply", json={"ops": [{"source": "a-b", "target": "c-d"}]}
+            )
+        ).status_code == 403

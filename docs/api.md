@@ -190,6 +190,54 @@ Default limit 50, max 200. →
 Default limit 100, max 1000, newest first (single PK query in DynamoDB mode). →
 `{"edits": [{"bookmarkId","before","after","added","removed","actor","ts"}]}`
 
+### `POST /api/tags/recalibrate` — propose taxonomy ops (bm_v1)
+
+**Propose-only; mutates nothing; proposals are not persisted.** Same write
+policy as the PUT above (bm_v1 scoped token, `writeEnabled`, `all_private`
+scope). Reads the live taxonomy (tombstoned tags excluded) + the most recent
+200 tag-edit events, calls Bedrock Converse
+(`RECALIBRATE_MODEL_ID`, default `us.amazon.nova-2-lite-v1:0`), and returns
+validated ops. Targets are restricted to `^[a-z]+-[a-z]+$`; invalid,
+non-live-source, and chained ops are dropped. No request body.
+
+```json
+{
+  "ops": [
+    {"kind": "merge", "source": "machine-learning", "target": "ml-engineering",
+     "bookmarksAffected": 12, "reason": "near-duplicate"}
+  ],
+  "editsConsidered": 200,
+  "tagsConsidered": 87
+}
+```
+
+`kind` is `"merge"` when the target is a live tag, `"rename"` otherwise.
+Failures: `unauthorized`/`forbidden` (write policy), `service_unavailable`
+with HTTP **502** (Bedrock error or unparseable model output).
+
+### `POST /api/tags/recalibrate/apply` — apply approved ops (bm_v1)
+
+Re-validates server-side (never trusts the client's copy): 400
+`invalid_request` — writing **nothing** — for a never-existed source, a
+target not matching `^[a-z]+-[a-z]+$`, or non-disjoint ops (duplicate
+sources, or any op's target appearing as another op's source). Sources that
+are already tombstoned are skipped and reported `alreadyApplied`.
+
+Execution coalesces ops per bookmark (one rewrite + one edit event per
+bookmark, `actor: "recalibrate"`, snapshot rules from the PUT apply), then
+tombstones each source (`deprecated_as = target`, never deleted) only after
+all of that op's rewrites succeeded — retry after a partial failure is safe.
+
+**Body:** `{"ops": [{"source": "a-b", "target": "c-d"}]}` →
+
+```json
+{"results": [{"source": "a-b", "target": "c-d", "status": "applied", "bookmarksRewritten": 12}]}
+```
+
+`status` is `"applied"` or `"alreadyApplied"`. Failures: `validation_error`
+(bad shape), `invalid_request` (semantic validation, nothing written),
+`unauthorized`/`forbidden` (write policy).
+
 ### `GET /api/tags` — list all tags
 
 Tags are scoped to the authenticated tenant.

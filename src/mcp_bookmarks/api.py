@@ -17,6 +17,8 @@ Endpoints (mounted at ``/api``):
     PUT  /api/bookmarks/{{id}}/tags    — Replace tag set (bm_v1 token; admin tag editing)
     GET  /api/bookmarks/recent  — Recent bookmarks incl. aiTagsOriginal/tagsReviewedAt (bm_v1)
     GET  /api/tag-edits         — Tag-edit history, newest first (bm_v1)
+    POST /api/tags/recalibrate         — Propose taxonomy merge/rename ops (bm_v1; Bedrock)
+    POST /api/tags/recalibrate/apply   — Apply approved ops (bm_v1)
     GET  /api/usage     — Monthly usage counter (when API keys configured)
     GET  /api/ai-gateway/status — Safe metadata for the AI Gateway dashboard (no secrets)
     POST /api/ensemble  — Multi-model + LLM judge (requires ENSEMBLE_ENABLED=true)
@@ -43,6 +45,7 @@ from .api_requests import (
     BookmarkTagsRequest,
     CreateTagRequest,
     EnsembleRequest,
+    RecalibrateApplyRequest,
     ReplaceTagsRequest,
     SaveBookmarkRequest,
     parse_request_body,
@@ -59,6 +62,7 @@ from .security_headers import compute_script_hash
 from .services import billing as billing_service
 from .services import bookmark as bookmark_service
 from .services import quota as quota_service
+from .services import recalibrate as recalibrate_service
 from .services import taxonomy as taxonomy_service
 from .services import usage as usage_service
 from .usage_meter import monthly_limit_enabled
@@ -475,6 +479,52 @@ async def api_tag_edits(request: Request) -> JSONResponse:
     db = await _db(request)
     try:
         return JSONResponse({"edits": await db.get_tag_edits(limit=limit)})
+    finally:
+        await db.close()
+
+
+async def api_recalibrate_propose(request: Request) -> JSONResponse:
+    """POST /tags/recalibrate — PROPOSE-ONLY taxonomy ops (Bedrock). No body.
+
+    Write-policy gated FIRST even though it mutates nothing: proposals leak
+    the whole taxonomy + edit history, and apply is its sibling — the two
+    must share one auth bar (scoped_token + writeEnabled, no tags scope).
+    """
+    policy_err = tag_write_policy_error(request)
+    if policy_err is not None:
+        return policy_err
+    db = await _db(request)
+    try:
+        try:
+            result = await recalibrate_service.propose(db)
+        except recalibrate_service.ProposeFailed as exc:
+            return error_response(
+                ErrorCode.SERVICE_UNAVAILABLE,
+                f"Recalibrate proposal failed: {exc}",
+                status=502,
+            )
+        return JSONResponse(result)
+    finally:
+        await db.close()
+
+
+async def api_recalibrate_apply(request: Request) -> JSONResponse:
+    """POST /tags/recalibrate/apply — execute admin-approved ops."""
+    policy_err = tag_write_policy_error(request)
+    if policy_err is not None:
+        return policy_err
+    body_model, err = await parse_request_body(request, RecalibrateApplyRequest)
+    if err is not None:
+        return err
+    assert body_model is not None  # parse_request_body invariant
+    ops = [{"source": op.source, "target": op.target} for op in body_model.ops]
+    db = await _db(request)
+    try:
+        result, reason = await recalibrate_service.apply(db, ops)
+        if reason is not None:
+            return error_response(ErrorCode.INVALID_REQUEST, reason, status=400)
+        assert result is not None
+        return JSONResponse(result)
     finally:
         await db.close()
 
@@ -1147,6 +1197,8 @@ def create_api_app() -> Starlette:
             Route("/bookmarks/{bookmark_id}/tags", api_replace_bookmark_tags, methods=["PUT"]),
             Route("/bookmarks/{bookmark_id}", api_get_bookmark, methods=["GET"]),
             Route("/bookmarks", api_bookmarks, methods=["GET"]),
+            Route("/tags/recalibrate", api_recalibrate_propose, methods=["POST"]),
+            Route("/tags/recalibrate/apply", api_recalibrate_apply, methods=["POST"]),
             Route("/tag", api_create_tag_rest, methods=["POST"]),
             Route("/tags", api_tags, methods=["GET"]),
             Route("/tag-edits", api_tag_edits, methods=["GET"]),

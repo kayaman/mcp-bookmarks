@@ -52,6 +52,24 @@ class ReplaceTagsRequest(BaseModel):
     tags: list[str]
 
 
+class RecalibrateOp(BaseModel):
+    """One approved op inside ``POST /api/tags/recalibrate/apply``."""
+
+    source: str = Field(..., min_length=1, max_length=64)
+    target: str = Field(..., min_length=1, max_length=64)
+
+
+class RecalibrateApplyRequest(BaseModel):
+    """``POST /api/tags/recalibrate/apply`` body.
+
+    Semantic validation (target regex, liveness, disjointness) happens in
+    ``services.recalibrate.apply`` → 400 invalid_request; this model only
+    enforces shape (422 on missing keys).
+    """
+
+    ops: list[RecalibrateOp] = Field(..., min_length=1)
+
+
 class BookmarkSummaryRequest(BaseModel):
     """``POST /api/bookmarks/{id}/summary`` body."""
 
@@ -139,6 +157,8 @@ __all__ = [
     "BookmarkTagsRequest",
     "CreateTagRequest",
     "EnsembleRequest",
+    "RecalibrateApplyRequest",
+    "RecalibrateOp",
     "ReplaceTagsRequest",
     "SaveBookmarkRequest",
     "parse_request_body",
