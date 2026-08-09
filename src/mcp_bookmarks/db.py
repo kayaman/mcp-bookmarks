@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     summary     TEXT,
     content     TEXT,
     word_count  INTEGER DEFAULT 0,
+    ai_tags_original TEXT,
+    tags_reviewed_at TEXT,
     created_at  TEXT    DEFAULT (datetime('now')),
     updated_at  TEXT    DEFAULT (datetime('now')),
     UNIQUE (url, tenant_id)
@@ -84,6 +86,20 @@ CREATE TABLE IF NOT EXISTS bookmark_embeddings (
     PRIMARY KEY (bookmark_id, model),
     FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS tag_edits (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT    NOT NULL,
+    bookmark_id  TEXT    NOT NULL,
+    before_json  TEXT    NOT NULL,
+    after_json   TEXT    NOT NULL,
+    added_json   TEXT    NOT NULL,
+    removed_json TEXT    NOT NULL,
+    actor        TEXT    NOT NULL,
+    ts           TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tag_edits_user_ts ON tag_edits(user_id, ts);
 """
 
 
@@ -127,6 +143,10 @@ class Database:
             await self.db.execute(
                 "ALTER TABLE bookmarks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
             )
+        if "ai_tags_original" not in bk_cols:
+            await self.db.execute("ALTER TABLE bookmarks ADD COLUMN ai_tags_original TEXT")
+        if "tags_reviewed_at" not in bk_cols:
+            await self.db.execute("ALTER TABLE bookmarks ADD COLUMN tags_reviewed_at TEXT")
 
         cursor = await self.db.execute("PRAGMA table_info(tags)")
         tag_cols = {row["name"] for row in await cursor.fetchall()}
@@ -539,6 +559,144 @@ class Database:
                 )
         await self.db.commit()
         return await self.get_bookmark_by_id(bid)
+
+    # ── Admin tag editing (Phase 1) ───────────────────────────────────
+
+    async def replace_bookmark_tags(
+        self, bookmark_id: int | str, tags: list[str], *, actor: str = "human"
+    ) -> dict | None:
+        """Replace-set the bookmark's tags; snapshot + edit-log semantics.
+
+        - ``ai_tags_original`` is written by the FIRST mutation of any kind
+          (human edit or recalibrate) and never updated afterwards.
+        - ``tags_reviewed_at`` is written by HUMAN edits only, first edit only.
+        - Missing tag rows are created (name = slug); usage_count is recounted
+          exactly via the COUNT subquery (SQLite never drifts).
+        """
+        from .request_context import current_user_id
+
+        bid = _coerce_sqlite_bookmark_id(bookmark_id)
+        if bid is None:
+            return None
+        cursor = await self.db.execute(
+            "SELECT id FROM bookmarks WHERE id = ? AND tenant_id = ?", (bid, self.tenant_id)
+        )
+        if not await cursor.fetchone():
+            return None
+
+        before = await self._get_bookmark_tags(bid)
+        after = list(dict.fromkeys(tags))
+        added = [t for t in after if t not in before]
+        removed = [t for t in before if t not in after]
+        now = datetime.now(UTC).isoformat()
+
+        await self.db.execute(
+            "UPDATE bookmarks SET ai_tags_original = COALESCE(ai_tags_original, ?), "
+            "updated_at = ? WHERE id = ?",
+            (json.dumps(before), now, bid),
+        )
+        if actor == "human":
+            await self.db.execute(
+                "UPDATE bookmarks SET tags_reviewed_at = COALESCE(tags_reviewed_at, ?) "
+                "WHERE id = ?",
+                (now, bid),
+            )
+
+        for slug in added:
+            if await self.get_tag_by_slug(slug) is None:
+                await self.db.execute(
+                    "INSERT INTO tags (slug, tenant_id, name) VALUES (?, ?, ?)",
+                    (slug, self.tenant_id, slug),
+                )
+        await self.db.execute(
+            "DELETE FROM bookmark_tags WHERE bookmark_id = ? "
+            "AND tag_id IN (SELECT id FROM tags WHERE tenant_id = ?)",
+            (bid, self.tenant_id),
+        )
+        for slug in after:
+            await self.db.execute(
+                "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) "
+                "SELECT ?, id FROM tags WHERE slug = ? AND tenant_id = ?",
+                (bid, slug, self.tenant_id),
+            )
+        for slug in set(before) | set(after):
+            await self.db.execute(
+                "UPDATE tags SET usage_count = ("
+                "  SELECT COUNT(*) FROM bookmark_tags bt WHERE bt.tag_id = tags.id"
+                ") WHERE slug = ? AND tenant_id = ?",
+                (slug, self.tenant_id),
+            )
+
+        user_id = current_user_id() or self.tenant_id
+        await self.db.execute(
+            "INSERT INTO tag_edits (user_id, bookmark_id, before_json, after_json, "
+            "added_json, removed_json, actor, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                str(bid),
+                json.dumps(before),
+                json.dumps(after),
+                json.dumps(added),
+                json.dumps(removed),
+                actor,
+                now,
+            ),
+        )
+        await self.db.commit()
+        return {
+            "bookmark_id": bid,
+            "before": before,
+            "after": after,
+            "added": added,
+            "removed": removed,
+        }
+
+    async def get_recent_bookmarks(self, limit: int = 50) -> list[dict]:
+        """Recent bookmarks with the snapshot fields, camelCase wire keys."""
+        lim = max(1, min(int(limit), 200))
+        cursor = await self.db.execute(
+            "SELECT * FROM bookmarks WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (self.tenant_id, lim),
+        )
+        rows = await cursor.fetchall()
+        out: list[dict] = []
+        for r in rows:
+            orig = r["ai_tags_original"]
+            out.append(
+                {
+                    "id": r["id"],
+                    "url": r["url"],
+                    "title": r["title"],
+                    "aiTags": await self._get_bookmark_tags(r["id"]),
+                    "aiTagsOriginal": json.loads(orig) if orig else None,
+                    "tagsReviewedAt": r["tags_reviewed_at"],
+                }
+            )
+        return out
+
+    async def get_tag_edits(self, limit: int = 100) -> list[dict]:
+        """Edit history for the request user (tenant fallback), newest first."""
+        from .request_context import current_user_id
+
+        user_id = current_user_id() or self.tenant_id
+        lim = max(1, min(int(limit), 1000))
+        cursor = await self.db.execute(
+            "SELECT * FROM tag_edits WHERE user_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
+            (user_id, lim),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "bookmarkId": r["bookmark_id"],
+                "before": json.loads(r["before_json"]),
+                "after": json.loads(r["after_json"]),
+                "added": json.loads(r["added_json"]),
+                "removed": json.loads(r["removed_json"]),
+                "actor": r["actor"],
+                "ts": r["ts"],
+            }
+            for r in rows
+        ]
 
     # ── Export operations ─────────────────────────────────────────────
 
