@@ -81,6 +81,7 @@ resource "aws_instance" "this" {
     type_index           = var.type_index
     user_index           = var.user_index
     connections_table    = var.connections_table
+    tag_edits_table      = var.tag_edits_table
     cognito_user_pool_id = var.cognito_user_pool_id
     cognito_client_id    = var.cognito_client_id
     owner_user_id        = var.owner_user_id

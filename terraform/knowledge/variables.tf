@@ -78,6 +78,12 @@ variable "connections_table" {
   default     = "blogmarks-mcp-connections"
 }
 
+variable "tag_edits_table" {
+  description = "DynamoDB tag-edit event log (blogmarks-tag-edits; created by blogmarks CDK data-stack, written by PUT /api/bookmarks/{id}/tags, read by GET /api/tag-edits)."
+  type        = string
+  default     = "blogmarks-tag-edits"
+}
+
 # ── Auth (first-party owner JWT path) ─────────────────────────────────────────
 
 variable "cognito_user_pool_id" {
