@@ -123,6 +123,12 @@ variable "bedrock_embed_dims" {
   default     = 1024
 }
 
+variable "recalibrate_model" {
+  description = "Bedrock inference-profile id for the tag-recalibrate proposer (Converse API). Must match bedrock_text.py's RECALIBRATE_MODEL_ID default — no env var is injected (user_data changes replace the instance)."
+  type        = string
+  default     = "us.amazon.nova-2-lite-v1:0"
+}
+
 variable "refresh_seconds" {
   description = "Background index refresh interval (seconds)."
   type        = number

@@ -8,6 +8,16 @@ locals {
   tag_edits_arn = "${local.ddb_prefix}/${var.tag_edits_table}"
   # Titan/Cohere embedding models are AWS-owned foundation models (no account id).
   bedrock_model_arn = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.bedrock_embed_model}"
+  # Recalibrate proposer (Converse). us.* cross-region inference profiles are
+  # ACCOUNT-scoped ARNs; invoking through one also requires InvokeModel on the
+  # regional foundation-model ARNs it routes to. The foundation-model id is
+  # the profile id minus the "us." geo prefix.
+  recalibrate_profile_arn = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.recalibrate_model}"
+  recalibrate_fm_id       = trimprefix(var.recalibrate_model, "us.")
+  recalibrate_fm_arns = [
+    for region in ["us-east-1", "us-east-2", "us-west-2"] :
+    "arn:aws:bedrock:${region}::foundation-model/${local.recalibrate_fm_id}"
+  ]
 }
 
 data "aws_iam_policy_document" "ec2_assume" {
@@ -86,6 +96,17 @@ data "aws_iam_policy_document" "app" {
     sid       = "BedrockEmbeddings"
     actions   = ["bedrock:InvokeModel"]
     resources = [local.bedrock_model_arn]
+  }
+
+  # Text generation for the tag-recalibrate proposer (POST /api/tags/recalibrate).
+  # bedrock:InvokeModel covers the Converse API; the client does not stream.
+  statement {
+    sid     = "BedrockRecalibrate"
+    actions = ["bedrock:InvokeModel"]
+    resources = concat(
+      [local.recalibrate_profile_arn],
+      local.recalibrate_fm_arns,
+    )
   }
 
   # Pull the container image from ECR (when ECR-hosted).
