@@ -889,6 +889,51 @@ class DynamoDBDatabase:
             for i in items[:lim]
         ]
 
+    # ── Recalibrate sweep helpers (Phase 2) ────────────────────────────
+
+    async def get_bookmarks_with_any_tag(self, slugs: list[str]) -> list[dict]:
+        """[{'id', 'tags'}] for the request user's bookmarks whose aiTags
+        intersect ``slugs``.
+
+        Owner-corpus-wide by design: org + user filtering only. The
+        per-connection scope/exposure gate (``_item_scope_visible``) is
+        deliberately NOT applied — a recalibrate apply must rewrite every
+        bookmark belonging to the user, or merged-away slugs would strand
+        on unexposed rows. Full-table scan; acceptable at ~700 links
+        (spec Known risks). ``user_id`` is resolved HERE in the async
+        context — contextvars don't cross run_in_executor.
+        """
+        if not slugs:
+            return []
+        user_id = self._user_id()
+
+        def _scan() -> list[dict]:
+            tag_cond = None
+            for s in slugs:
+                c = Attr("aiTags").contains(s)
+                tag_cond = c if tag_cond is None else (tag_cond | c)
+            fe = Attr("url").exists() & Attr("userId").eq(user_id) & tag_cond
+            items: list[dict] = []
+            start_key: dict[str, Any] | None = None
+            while True:
+                kwargs: dict[str, Any] = {"FilterExpression": fe}
+                if start_key is not None:
+                    kwargs["ExclusiveStartKey"] = start_key
+                resp = self._links.scan(**kwargs)
+                items.extend(resp.get("Items", []))
+                start_key = resp.get("LastEvaluatedKey")
+                if start_key is None:
+                    break
+            return items
+
+        items = await _run(_scan)
+        items = [i for i in items if self._item_org_visible(i)]
+        return [{"id": i["id"], "tags": list(i.get("aiTags", []))} for i in items]
+
+    async def count_bookmarks_with_tag(self, slug: str) -> int:
+        """How many of the request user's bookmarks currently carry ``slug``."""
+        return len(await self.get_bookmarks_with_any_tag([slug]))
+
     async def search_bookmarks(
         self, query: str | None = None, tag: str | None = None, limit: int = 20
     ) -> list[Bookmark]:

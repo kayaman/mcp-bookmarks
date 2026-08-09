@@ -197,6 +197,18 @@ class BookmarkBackend(Protocol):
         """Edit history for the request user, newest first."""
         ...
 
+    # ── Recalibrate (Phase 2) ──────────────────────────────────────
+
+    async def get_bookmarks_with_any_tag(self, slugs: list[str]) -> list[dict]:
+        """[{'id': int|str, 'tags': [...]}] for the request user's bookmarks
+        whose current tags intersect slugs. Empty input → []. Owner-corpus
+        scope (org + user only; no per-connection scope gate)."""
+        ...
+
+    async def count_bookmarks_with_tag(self, slug: str) -> int:
+        """Count of the request user's bookmarks whose current tags contain slug."""
+        ...
+
     # ── Aggregate / export ─────────────────────────────────────────
 
     async def get_stats(self) -> dict: ...

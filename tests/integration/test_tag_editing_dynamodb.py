@@ -252,3 +252,32 @@ async def test_delete_tag_still_hard_deletes(ddb):
     _seed_tag("doomed-tag", 0)
     assert await ddb.delete_tag("doomed-tag") is True
     assert "Item" not in _table(_TAGS_TABLE).get_item(Key={"slug": "doomed-tag"})
+
+
+# ── Recalibrate sweep helpers (Phase 2) ───────────────────────────────
+
+
+async def test_count_bookmarks_with_tag_scopes_to_user(ddb):
+    _seed_link("bk-1", ["python"])
+    _seed_link("bk-2", ["python", "web"])
+    _table(_LINKS_TABLE).put_item(  # someone else's bookmark — excluded
+        Item={
+            "id": "bk-other",
+            "url": "https://example.com/other",
+            "userId": "u-other",
+            "savedAt": "2026-08-01T00:00:00+00:00",
+            "aiTags": ["python"],
+        }
+    )
+    assert await ddb.count_bookmarks_with_tag("python") == 2
+    assert await ddb.count_bookmarks_with_tag("never-existed") == 0
+
+
+async def test_get_bookmarks_with_any_tag_shape(ddb):
+    _seed_link("bk-1", ["python", "web"])
+    _seed_link("bk-2", ["rust-lang"])
+    rows = await ddb.get_bookmarks_with_any_tag(["python", "rust-lang"])
+    assert {r["id"] for r in rows} == {"bk-1", "bk-2"}
+    by_id = {r["id"]: r["tags"] for r in rows}
+    assert by_id["bk-1"] == ["python", "web"]
+    assert await ddb.get_bookmarks_with_any_tag([]) == []

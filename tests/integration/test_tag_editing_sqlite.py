@@ -153,3 +153,26 @@ async def test_migrate_adds_deprecated_as_to_legacy_db(tmp_path):
         assert [t.slug for t in await db.get_all_tags()] == ["fresh-tag"]
     finally:
         await db.close()
+
+
+# ── Recalibrate sweep helpers (Phase 2) ───────────────────────────────
+
+
+async def test_count_bookmarks_with_tag(db):
+    await _seed(db, url="https://example.com/1", tags=("python",))
+    await _seed(db, url="https://example.com/2", tags=("web",))
+    b3 = await db.upsert_bookmark(url="https://example.com/3", title="T")
+    await db.tag_bookmark(b3.id, ["python"])
+    assert await db.count_bookmarks_with_tag("python") == 2
+    assert await db.count_bookmarks_with_tag("web") == 1
+    assert await db.count_bookmarks_with_tag("never-existed") == 0
+
+
+async def test_get_bookmarks_with_any_tag_returns_id_and_tags(db):
+    b1 = await _seed(db, url="https://example.com/1", tags=("python", "web"))
+    await _seed(db, url="https://example.com/2", tags=("rust-lang",))
+    rows = await db.get_bookmarks_with_any_tag(["python"])
+    assert rows == [{"id": b1, "tags": ["python", "web"]}]  # tags ordered by slug
+    assert await db.get_bookmarks_with_any_tag([]) == []
+    both = await db.get_bookmarks_with_any_tag(["python", "rust-lang"])
+    assert len(both) == 2

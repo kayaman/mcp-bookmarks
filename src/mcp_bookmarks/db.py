@@ -720,6 +720,28 @@ class Database:
             for r in rows
         ]
 
+    # ── Recalibrate sweep helpers (Phase 2) ───────────────────────────
+
+    async def get_bookmarks_with_any_tag(self, slugs: list[str]) -> list[dict]:
+        """[{'id', 'tags'}] for this tenant's bookmarks whose tags intersect slugs."""
+        if not slugs:
+            return []
+        placeholders = ",".join("?" * len(slugs))
+        cursor = await self.db.execute(
+            f"""SELECT DISTINCT b.id FROM bookmarks b
+                JOIN bookmark_tags bt ON bt.bookmark_id = b.id
+                JOIN tags t ON t.id = bt.tag_id
+                WHERE b.tenant_id = ? AND t.tenant_id = ? AND t.slug IN ({placeholders})
+                ORDER BY b.id""",
+            (self.tenant_id, self.tenant_id, *slugs),
+        )
+        ids = [r["id"] for r in await cursor.fetchall()]
+        return [{"id": bid, "tags": await self._get_bookmark_tags(bid)} for bid in ids]
+
+    async def count_bookmarks_with_tag(self, slug: str) -> int:
+        """How many of this tenant's bookmarks currently carry ``slug``."""
+        return len(await self.get_bookmarks_with_any_tag([slug]))
+
     # ── Export operations ─────────────────────────────────────────────
 
     async def get_all_bookmarks(self) -> list[Bookmark]:
